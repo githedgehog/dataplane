@@ -3,6 +3,15 @@
 
 //! Plans mean what their tables mean: every plan is run against the first-match oracle on
 //! probe keys at and around rule boundaries.
+//!
+//! Memory: the suite peaks at about 0.4 GB, the ignored measurements under 2 GB, against CI's
+//! 20 GiB for the whole test suite. Plans are bounded by [`crate::rfc::Options::max_entries`].
+//! Run measurements as CI would bound them, so a runaway is killed rather than the machine:
+//!
+//! ```text
+//! systemd-run --user --scope -p MemoryMax=20G -p MemorySwapMax=0 -- \
+//!     cargo test -p dataplane-planner --release sizes -- --ignored --nocapture
+//! ```
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -306,6 +315,38 @@ mod guarded {
                 .count();
             eprintln!("    mismatches: {mismatches}");
             let _ = Verdict::Allow;
+        }
+    }
+}
+
+/// How big the join is for the mixed family, uncapped. Run with
+/// `cargo test -p dataplane-planner --release mixed_join -- --ignored --nocapture`.
+#[test]
+#[ignore = "a measurement"]
+fn mixed_join() {
+    for n in [100, 1000] {
+        let table = acl(Family::Mixed, n, 1);
+        let options = Options {
+            max_product: 400_000_000,
+            ..Options::default()
+        };
+        let started = std::time::Instant::now();
+        match plan(&table, &options) {
+            Ok((plan, stages)) => {
+                eprintln!(
+                    "mixed {n}: worst={:?} entries={} in {:?}",
+                    plan.worst_path(),
+                    plan.entries(),
+                    started.elapsed()
+                );
+                for s in stages {
+                    eprintln!(
+                        "    {:<24} classes={:<7} entries={}",
+                        s.name, s.classes, s.entries
+                    );
+                }
+            }
+            Err(e) => eprintln!("mixed {n}: {e:?}"),
         }
     }
 }

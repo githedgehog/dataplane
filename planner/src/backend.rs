@@ -26,7 +26,7 @@ impl Cost {
     pub fn of<A: Clone>(plan: &Plan<A>) -> Option<Cost> {
         let mut bits: HashMap<u8, u32> = HashMap::new();
         for level in &plan.levels {
-            for step in level.entries.values().chain(std::iter::once(&level.miss)) {
+            for step in level.entries.steps().chain(std::iter::once(&level.miss)) {
                 for &(reg, value) in &step.writes {
                     let b = bits.entry(reg).or_default();
                     *b = (*b).max(value.checked_ilog2().map_or(1, |l| l + 1));
@@ -187,7 +187,7 @@ pub fn closed<A>(plan: &Plan<A>) -> bool {
     ok(&plan.entry.then)
         && plan.levels.iter().all(|l| {
             l.entries
-                .values()
+                .steps()
                 .chain(std::iter::once(&l.miss))
                 .all(|s| ok(&s.then))
         })

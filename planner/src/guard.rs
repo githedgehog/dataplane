@@ -9,7 +9,7 @@
 //! backend runs in software, alone: a pathological ACL costs its owner, not the other tenants.
 
 use crate::backend::{Backend, Cost, Unfit};
-use crate::plan::{Level, Part, Plan, Step, Then};
+use crate::plan::{Entries, Level, Part, Plan, Step, Then};
 use crate::rfc::{self, Options, Refusal};
 use crate::rules::{Rule, Table};
 use std::collections::BTreeMap;
@@ -91,16 +91,17 @@ pub fn plan<A: Clone + Eq + Hash, B: Backend>(
             .collect(),
         default: table.default.clone(),
     };
+    let guard_key: Vec<Part> = guard
+        .iter()
+        .map(|&f| Part::Field {
+            field: f,
+            len: table.fields[f].width,
+        })
+        .collect();
     let mut levels: Vec<Level<Placed<A>>> = vec![Level {
         name: "guard".to_string(),
-        key: guard
-            .iter()
-            .map(|&f| Part::Field {
-                field: f,
-                len: table.fields[f].width,
-            })
-            .collect(),
-        entries: std::collections::HashMap::new(),
+        entries: Entries::for_key(&guard_key, &table.fields),
+        key: guard_key,
         miss: Step::done(Placed::Software),
     }];
     // Every tenant's plan comes after the guard level.
@@ -129,7 +130,7 @@ pub fn plan<A: Clone + Eq + Hash, B: Backend>(
         };
         match key {
             Some(key) => {
-                levels[0].entries.insert(key.clone(), step);
+                levels[0].entries.insert(key, step);
             }
             None => levels[0].miss = step,
         }
@@ -206,11 +207,7 @@ fn graft<A: Clone>(
                     reg @ Part::Reg(_) => reg,
                 })
                 .collect(),
-            entries: level
-                .entries
-                .into_iter()
-                .map(|(k, s)| (k, step(s)))
-                .collect(),
+            entries: level.entries.map_steps(step),
             miss: step(level.miss),
         });
     }

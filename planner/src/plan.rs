@@ -36,7 +36,7 @@ pub enum Part {
 }
 
 /// Where a step goes.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Then<A> {
     /// On to another level.
     Goto(LevelId),
@@ -45,7 +45,7 @@ pub enum Then<A> {
 }
 
 /// What an entry or a miss does: write registers, then go on or end.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Step<A> {
     /// Registers to write, and their values.
     pub writes: Vec<(Reg, u32)>,
@@ -82,6 +82,127 @@ impl<A> Step<A> {
     }
 }
 
+/// The bits a class register's value takes in a packed key.
+pub const REGISTER_BITS: u32 = 32;
+
+/// A level's exact entries, compactly: each key packed into one `u128` (its parts' significant
+/// bits, concatenated), each value an index into the level's distinct steps. About 32 bytes an
+/// entry, where a map from `Vec<u128>` to `Step` took several times that: plans run to millions
+/// of entries, and the test suite has a memory budget (CI: 20 GiB in all).
+#[derive(Clone, Debug)]
+pub struct Entries<A> {
+    /// Per key part: how far right to shift its value, and how many bits it keeps.
+    parts: Vec<(u32, u32)>,
+    map: HashMap<u128, u32>,
+    steps: Vec<Step<A>>,
+    index: HashMap<Step<A>, u32>,
+}
+
+impl<A> Entries<A> {
+    /// No entries, for a level keyed on `key` over `fields`.
+    ///
+    /// # Panics
+    ///
+    /// If the key is wider than 128 bits.
+    #[must_use]
+    pub fn for_key(key: &[Part], fields: &[Field]) -> Entries<A> {
+        let parts: Vec<(u32, u32)> = key
+            .iter()
+            .map(|p| match *p {
+                Part::Field { field, len } => {
+                    let width = u32::from(fields[field].width);
+                    let len = u32::from(len).min(width);
+                    (width - len, len)
+                }
+                Part::Reg(_) => (0, REGISTER_BITS),
+            })
+            .collect();
+        let bits: u32 = parts.iter().map(|(_, b)| b).sum();
+        assert!(bits <= 128, "a key of {bits} bits does not pack into 128");
+        Entries {
+            parts,
+            map: HashMap::new(),
+            steps: Vec::new(),
+            index: HashMap::new(),
+        }
+    }
+
+    /// The packed key of `values`, one per part.
+    #[must_use]
+    pub fn pack(&self, values: &[u128]) -> u128 {
+        self.parts
+            .iter()
+            .zip(values)
+            .fold(0u128, |key, (&(shift, bits), &v)| {
+                let v = (v >> shift) & crate::rules::max_of(u8::try_from(bits).unwrap_or(128));
+                if bits == 128 { v } else { key << bits | v }
+            })
+    }
+
+    /// The step for `values`, if an entry has it.
+    #[must_use]
+    pub fn get(&self, values: &[u128]) -> Option<&Step<A>> {
+        self.map
+            .get(&self.pack(values))
+            .map(|&i| &self.steps[i as usize])
+    }
+
+    /// How many entries.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    /// Whether there are none.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    /// The distinct steps the entries take.
+    pub fn steps(&self) -> impl Iterator<Item = &Step<A>> {
+        self.steps.iter()
+    }
+
+    /// The distinct steps, mutably: to patch where they go.
+    pub fn steps_mut(&mut self) -> impl Iterator<Item = &mut Step<A>> {
+        self.index.clear();
+        self.steps.iter_mut()
+    }
+
+    /// The same entries, each step mapped by `f` (which must keep distinct steps distinct).
+    pub fn map_steps<B>(self, f: impl FnMut(Step<A>) -> Step<B>) -> Entries<B> {
+        Entries {
+            parts: self.parts,
+            map: self.map,
+            steps: self.steps.into_iter().map(f).collect(),
+            index: HashMap::new(),
+        }
+    }
+}
+
+impl<A: Clone + Eq + std::hash::Hash> Entries<A> {
+    /// Add (or replace) the entry for `values`.
+    pub fn insert(&mut self, values: &[u128], step: Step<A>) {
+        if self.index.is_empty() && !self.steps.is_empty() {
+            // Rebuilt after steps were patched in place.
+            self.index = self
+                .steps
+                .iter()
+                .enumerate()
+                .map(|(i, s)| (s.clone(), u32::try_from(i).unwrap_or(u32::MAX)))
+                .collect();
+        }
+        let next = u32::try_from(self.steps.len()).unwrap_or(u32::MAX);
+        let i = *self.index.entry(step.clone()).or_insert_with(|| {
+            self.steps.push(step);
+            next
+        });
+        let key = self.pack(values);
+        self.map.insert(key, i);
+    }
+}
+
 /// One exact-match table.
 #[derive(Clone, Debug)]
 pub struct Level<A> {
@@ -89,9 +210,9 @@ pub struct Level<A> {
     pub name: String,
     /// The key's parts.
     pub key: Vec<Part>,
-    /// Exact entries: one value per key part (a field's value masked to its top bits, as
+    /// Exact entries, by the key's part values (a field's value masked to its top bits, as
     /// [`Plan::part_value`] computes it; a register's value).
-    pub entries: HashMap<Vec<u128>, Step<A>>,
+    pub entries: Entries<A>,
     /// When no entry matches.
     pub miss: Step<A>,
 }
@@ -188,7 +309,7 @@ impl<A: Clone> Plan<A> {
             memo[id] = Visit::OnStack;
             let level = &plan.levels[id];
             let mut best = 0;
-            for step in level.entries.values().chain(std::iter::once(&level.miss)) {
+            for step in level.entries.steps().chain(std::iter::once(&level.miss)) {
                 if let Then::Goto(next) = step.then {
                     best = best.max(depth(plan, next, memo)?);
                 }

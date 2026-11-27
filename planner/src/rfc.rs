@@ -19,7 +19,7 @@
 //!
 //! Plans are checked against [`Table::first_match`]; see the tests.
 
-use crate::plan::{Level, LevelId, Part, Plan, Reg, Step, Then};
+use crate::plan::{Entries, Level, LevelId, Part, Plan, Reg, Step, Then};
 use crate::rules::{Field, Interval, Table, max_of};
 use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
@@ -98,6 +98,12 @@ pub struct Options {
     /// Fuse the narrowest field with another narrow one into one exact level over both (at most
     /// 24 bits of key together), saving a level and a combination.
     pub fuse: bool,
+    /// Look every group's classes up in one final level (a join), when its enumeration is
+    /// within [`Options::max_product`], instead of combining them pairwise.
+    pub join: bool,
+    /// The entries a plan may have in all: past it, the plan is refused (and a join given up
+    /// for pairwise combination). At about 32 bytes an entry, 16M is half a gigabyte.
+    pub max_entries: usize,
 }
 
 impl Default for Options {
@@ -108,6 +114,8 @@ impl Default for Options {
             dense: 1_000_000,
             expand: 1 << 20,
             fuse: true,
+            join: true,
+            max_entries: 16 << 20,
         }
     }
 }
@@ -124,6 +132,11 @@ pub enum Refusal {
     },
     /// The table is malformed.
     Malformed(String),
+    /// The plan would have more than [`Options::max_entries`] entries.
+    Entries {
+        /// How many it had when refused.
+        entries: usize,
+    },
 }
 
 /// What a stage of the plan came to, for sizing.
@@ -164,6 +177,8 @@ struct Planner<'t, A> {
     universal: HashMap<u32, Bits>,
     /// Whether a level already ends with the action.
     ended: bool,
+    /// Entries over the levels made so far.
+    total: usize,
 }
 
 impl<A: Clone + Eq + Hash> Planner<'_, A> {
@@ -208,7 +223,18 @@ impl<A: Clone + Eq + Hash> Planner<'_, A> {
         )
     }
 
+    /// Refuse the plan if its entries are past [`Options::max_entries`].
+    fn within_budget(&self) -> Result<(), Refusal> {
+        if self.total > self.options.max_entries {
+            return Err(Refusal::Entries {
+                entries: self.total,
+            });
+        }
+        Ok(())
+    }
+
     fn push_level(&mut self, level: Level<A>) -> LevelId {
+        self.total += level.entries.len();
         self.levels.push(level);
         self.levels.len() - 1
     }
@@ -353,28 +379,29 @@ impl<A: Clone + Eq + Hash> Planner<'_, A> {
             .iter()
             .max_by_key(|(id, w)| (**w, std::cmp::Reverse(**id)))
             .map_or(0, |(id, _)| *id);
-        let mut entries = HashMap::new();
+        let (wf, wg) = (self.table.fields[f], self.table.fields[g]);
+        let key = vec![
+            Part::Field {
+                field: f,
+                len: wf.width,
+            },
+            Part::Field {
+                field: g,
+                len: wg.width,
+            },
+        ];
+        let mut entries = Entries::for_key(&key, &self.table.fields);
         for (a, b, id, _) in cross.iter().filter(|c| c.2 != common) {
             for x in vf[*a].iter().flat_map(|iv| iv.lo..=iv.hi) {
                 for y in vg[*b].iter().flat_map(|iv| iv.lo..=iv.hi) {
-                    entries.insert(vec![x, y], Step::write_goto(reg, *id, CONTINUE));
+                    entries.insert(&[x, y], Step::write_goto(reg, *id, CONTINUE));
                 }
             }
         }
-        let (wf, wg) = (self.table.fields[f], self.table.fields[g]);
         let n = entries.len();
         let id = self.push_level(Level {
             name: format!("{}+{} (exact)", wf.name, wg.name),
-            key: vec![
-                Part::Field {
-                    field: f,
-                    len: wf.width,
-                },
-                Part::Field {
-                    field: g,
-                    len: wg.width,
-                },
-            ],
+            key,
             entries,
             miss: Step::write_goto(reg, common, CONTINUE),
         });
@@ -438,6 +465,90 @@ impl<A: Clone + Eq + Hash> Planner<'_, A> {
             .map(|(_, g)| (first.min(g), first.max(g)))
     }
 
+    /// One level over every group's register, ending with the action: `None` if its
+    /// enumeration would pass [`Options::max_product`].
+    ///
+    /// The miss is the table's default. A tuple of classes needs an entry only if its first
+    /// shared rule's action isn't the default; such tuples are enumerated rule by rule, from the
+    /// classes holding the rule in each group, and kept only where that rule is the first they
+    /// share. Rules a class truncated away are dead in it, so first shared is first match.
+    fn join(&mut self, groups: &[Group]) -> Option<LevelId> {
+        let default = self.table.default.clone();
+        // Rule -> the classes holding it, per group.
+        let holders: Vec<HashMap<usize, Vec<u32>>> = groups
+            .iter()
+            .map(|g| {
+                let mut index: HashMap<usize, Vec<u32>> = HashMap::new();
+                for (id, bits) in g.classes.iter().enumerate() {
+                    for rule in ones(bits) {
+                        index
+                            .entry(rule)
+                            .or_default()
+                            .push(u32::try_from(id).unwrap_or(u32::MAX));
+                    }
+                }
+                index
+            })
+            .collect();
+        let mut budget = self.options.max_product;
+        let key: Vec<Part> = groups.iter().filter_map(|g| g.reg.map(Part::Reg)).collect();
+        let mut entries = Entries::for_key(&key, &self.table.fields);
+        for (rule, r) in self.table.rules.iter().enumerate() {
+            if r.action == default {
+                continue;
+            }
+            let lists: Option<Vec<&Vec<u32>>> = holders.iter().map(|h| h.get(&rule)).collect();
+            let Some(lists) = lists else { continue };
+            // Depth first over the groups, pruning a partial tuple once an earlier rule holds
+            // in it whatever the remaining groups' classes are (it would be first, not `rule`).
+            let mut stack: Vec<(usize, Bits, Vec<u32>)> =
+                vec![(0, vec![u64::MAX; self.words], Vec::new())];
+            while let Some((g, bits, picked)) = stack.pop() {
+                if g == groups.len() {
+                    if first(&bits) == Some(rule) {
+                        let key: Vec<u128> = groups
+                            .iter()
+                            .zip(&picked)
+                            .filter(|(group, _)| group.reg.is_some())
+                            .map(|(_, &id)| u128::from(id))
+                            .collect();
+                        entries.insert(&key, Step::done(r.action.clone()));
+                        if self.total + entries.len() > self.options.max_entries {
+                            return None;
+                        }
+                    }
+                    continue;
+                }
+                let covered = groups[..=g].iter().fold(0, |c, group| c | group.covered);
+                for &id in lists[g] {
+                    budget = budget.checked_sub(1)?;
+                    let next = and(&bits, &groups[g].classes[id as usize]);
+                    let decided = first(&and(&next, self.universal_outside(covered)));
+                    if decided.is_some_and(|winner| winner < rule) {
+                        continue;
+                    }
+                    let mut picked = picked.clone();
+                    picked.push(id);
+                    stack.push((g + 1, next, picked));
+                }
+            }
+        }
+        let n = entries.len();
+        let id = self.push_level(Level {
+            name: "join".to_string(),
+            key,
+            entries,
+            miss: Step::done(default),
+        });
+        self.report.push(Stage {
+            name: "join".to_string(),
+            classes: 0,
+            levels: 1,
+            entries: n,
+        });
+        Some(id)
+    }
+
     /// The levels classifying field `f` into `reg`, all but the `default` class's values:
     /// how many levels, and entries.
     fn field_levels(
@@ -450,19 +561,20 @@ impl<A: Clone + Eq + Hash> Planner<'_, A> {
         let field = self.table.fields[f];
         let first_level = self.levels.len();
         if field.width <= self.options.narrow {
-            let mut entries = HashMap::new();
+            let key = vec![Part::Field {
+                field: f,
+                len: field.width,
+            }];
+            let mut entries = Entries::for_key(&key, &self.table.fields);
             for (iv, id) in intervals.iter().filter(|(_, id)| *id != default) {
                 for v in iv.lo..=iv.hi {
-                    entries.insert(vec![v], Step::write_goto(reg, *id, CONTINUE));
+                    entries.insert(&[v], Step::write_goto(reg, *id, CONTINUE));
                 }
             }
             let n = entries.len();
             self.push_level(Level {
                 name: format!("{} (exact)", field.name),
-                key: vec![Part::Field {
-                    field: f,
-                    len: field.width,
-                }],
+                key,
                 entries,
                 miss: Step::write_goto(reg, default, CONTINUE),
             });
@@ -479,8 +591,7 @@ impl<A: Clone + Eq + Hash> Planner<'_, A> {
             }
             let counts: Vec<(u8, usize)> = by_len.iter().map(|(l, v)| (*l, v.len())).collect();
             let targets = expansion_targets(&counts, self.options.expand);
-            let mut levels: BTreeMap<std::cmp::Reverse<u8>, HashMap<Vec<u128>, Step<A>>> =
-                BTreeMap::new();
+            let mut levels: BTreeMap<std::cmp::Reverse<u8>, Entries<A>> = BTreeMap::new();
             for (len, pieces) in by_len {
                 let target = targets
                     .iter()
@@ -489,10 +600,19 @@ impl<A: Clone + Eq + Hash> Planner<'_, A> {
                     .unwrap_or_else(|| unreachable!("the longest length is a target"));
                 let step = 1u128 << (field.width - target);
                 let copies = 1u128 << (target - len);
-                let level = levels.entry(std::cmp::Reverse(target)).or_default();
+                let fields = &self.table.fields;
+                let level = levels.entry(std::cmp::Reverse(target)).or_insert_with(|| {
+                    Entries::for_key(
+                        &[Part::Field {
+                            field: f,
+                            len: target,
+                        }],
+                        fields,
+                    )
+                });
                 for (lo, id) in pieces {
                     for k in 0..copies {
-                        level.insert(vec![lo + k * step], Step::write_goto(reg, id, CONTINUE));
+                        level.insert(&[lo + k * step], Step::write_goto(reg, id, CONTINUE));
                     }
                 }
             }
@@ -558,7 +678,8 @@ impl<A: Clone + Eq + Hash> Planner<'_, A> {
         let (classes, pairs) = self.cross(a, b, covered, dense, &name)?;
         // The miss: the core, when sparse (the pairs not enumerated cross to it); else the most
         // common result.
-        let mut entries = HashMap::new();
+        let key = vec![Part::Reg(ra), Part::Reg(rb)];
+        let mut entries = Entries::for_key(&key, &self.table.fields);
         let miss = if covered == self.all_fields() {
             let actions: Vec<A> = classes.iter().map(|c| self.action_of(c)).collect();
             let common = if dense {
@@ -572,7 +693,7 @@ impl<A: Clone + Eq + Hash> Planner<'_, A> {
                 let action = &actions[*id as usize];
                 if *action != common {
                     entries.insert(
-                        vec![u128::from(*ia), u128::from(*ib)],
+                        &[u128::from(*ia), u128::from(*ib)],
                         Step::done(action.clone()),
                     );
                 }
@@ -588,7 +709,7 @@ impl<A: Clone + Eq + Hash> Planner<'_, A> {
             for ((ia, ib), id) in &pairs {
                 if *id != common {
                     entries.insert(
-                        vec![u128::from(*ia), u128::from(*ib)],
+                        &[u128::from(*ia), u128::from(*ib)],
                         Step::write_goto(ra, *id, CONTINUE),
                     );
                 }
@@ -598,7 +719,7 @@ impl<A: Clone + Eq + Hash> Planner<'_, A> {
         let n = entries.len();
         let id = self.push_level(Level {
             name: name.clone(),
-            key: vec![Part::Reg(ra), Part::Reg(rb)],
+            key,
             entries,
             miss,
         });
@@ -705,15 +826,14 @@ impl<A: Clone + Eq + Hash> Planner<'_, A> {
             .collect();
         let common =
             most_common(actions.iter()).map_or_else(|| self.table.default.clone(), Clone::clone);
-        let entries = actions
-            .iter()
-            .enumerate()
-            .filter(|(_, a)| **a != common)
-            .map(|(id, a)| (vec![id as u128], Step::done(a.clone())))
-            .collect();
+        let key = vec![Part::Reg(reg)];
+        let mut entries = Entries::for_key(&key, &self.table.fields);
+        for (id, a) in actions.iter().enumerate().filter(|(_, a)| **a != common) {
+            entries.insert(&[id as u128], Step::done(a.clone()));
+        }
         let id = self.push_level(Level {
             name: "action".to_string(),
-            key: vec![Part::Reg(reg)],
+            key,
             entries,
             miss: Step::done(common),
         });
@@ -837,7 +957,7 @@ fn chain<A>(levels: &mut [Level<A>], stages: &[Option<LevelId>]) -> Vec<LevelId>
         let next = firsts.get(owner[id] + 1).copied();
         for step in level
             .entries
-            .values_mut()
+            .steps_mut()
             .chain(std::iter::once(&mut level.miss))
         {
             if matches!(step.then, Then::Goto(CONTINUE)) {
@@ -871,6 +991,7 @@ pub fn plan<A: Clone + Eq + Hash>(
         report: Vec::new(),
         universal: HashMap::new(),
         ended: false,
+        total: 0,
     };
     let fusion = if options.fuse { planner.fusion() } else { None };
     let mut groups: Vec<Group> = Vec::new();
@@ -881,6 +1002,16 @@ pub fn plan<A: Clone + Eq + Hash>(
             Some((_, b)) if f == b => {}
             _ => groups.push(planner.field(f, reg)),
         }
+    }
+    planner.within_budget()?;
+    // One join over every group, if its enumeration is small enough; else combine pairwise.
+    if options.join
+        && groups.iter().filter(|g| g.reg.is_some()).count() > 2
+        && let Some(level) = planner.join(&groups)
+    {
+        planner.stages.push(Some(level));
+        planner.ended = true;
+        groups.clear();
     }
     // Combine, smallest product first.
     while groups.len() > 1 {
@@ -896,7 +1027,9 @@ pub fn plan<A: Clone + Eq + Hash>(
         let b = groups.remove(best.2);
         let a = groups.remove(best.1);
         groups.push(planner.combine(&a, &b)?);
+        planner.within_budget()?;
     }
+    // Empty if joined: the join ends with the action.
     let last = groups.pop();
     let entry_action = planner.finish(last);
     let firsts = chain(&mut planner.levels, &planner.stages);
