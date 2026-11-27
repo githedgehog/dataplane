@@ -514,3 +514,115 @@ fn generations_cycle_under_load_and_every_packet_runs_under_one() {
     let publisher = thread::current().id();
     assert!(log.lock().iter().all(|&t| t == publisher));
 }
+
+// ---- Publication: offers, steps, policies, factories ----
+
+#[test]
+fn steps_walk_an_offer_through_begin_flip_and_retire() {
+    let log = drops();
+    let generations = Generations::new(Tag::new(1, &log));
+    let mut reader = generations.reader();
+    assert_eq!(generations.step(), Stepped::Idle);
+    generations.offer(Tag::new(2, &log));
+    assert_eq!(generations.step(), Stepped::Began(2));
+    assert_eq!(generations.step(), Stepped::Waiting(Wait::NotObserved));
+    let _ = reader.live();
+    assert_eq!(generations.step(), Stepped::Flipped(2));
+    assert_eq!(generations.step(), Stepped::Waiting(Wait::NotAcknowledged));
+    // Offers while draining coalesce: only the last is begun.
+    generations.offer(Tag::new(30, &log));
+    generations.offer(Tag::new(31, &log));
+    let _ = reader.live();
+    reader.idle();
+    assert_eq!(generations.step(), Stepped::Retired(2));
+    assert_eq!(generations.step(), Stepped::Began(3));
+    let live = reader.live();
+    assert_eq!(live.tables().newest().tables().generation, 31);
+    assert!(!generations.pending());
+}
+
+#[test]
+fn in_software_mode_a_burst_after_the_flip_acknowledges() {
+    let log = drops();
+    let generations = Generations::new(Tag::new(1, &log)).with_policy(Policy {
+        software: true,
+        idle_grace: 0,
+    });
+    let mut reader = generations.reader();
+    generations.offer(Tag::new(2, &log));
+    assert_eq!(generations.step(), Stepped::Began(2));
+    let _ = reader.live();
+    assert_eq!(generations.step(), Stepped::Flipped(2));
+    // A burst of unstamped packets: in software mode, that is all there ever is.
+    let mut packets = vec![packet(None), packet(None)];
+    let live = reader.live();
+    let seen = run_checked(&mut packets, live.tables());
+    reader.settle(seen);
+    assert_eq!(generations.step(), Stepped::Retired(2));
+}
+
+#[test]
+fn a_grace_window_keeps_a_packet_in_flight_live() {
+    let log = drops();
+    let generations = Generations::new(Tag::new(1, &log)).with_policy(Policy {
+        software: false,
+        idle_grace: 3,
+    });
+    let mut reader = generations.reader();
+    generations.begin(Tag::new(2, &log)).unwrap();
+    let _ = reader.live();
+    let in_flight = generations.selector().stamp();
+    generations.flip().unwrap();
+    // Empty polls within the grace window acknowledge nothing.
+    for _ in 0..3 {
+        let _ = reader.live();
+        reader.idle();
+        assert_eq!(generations.retire(), Err(Wait::NotAcknowledged));
+    }
+    // The packet arrives: it runs under generation 1, which is still live.
+    let mut packets = vec![packet(Some(in_flight))];
+    let live = reader.live();
+    let seen = run_checked(&mut packets, live.tables());
+    assert_eq!((seen.previous, seen.stale), (1, 0));
+    reader.settle(seen);
+    // Then the queue stays empty past the window.
+    for _ in 0..4 {
+        let _ = reader.live();
+        reader.idle();
+    }
+    assert_eq!(generations.retire(), Ok(()));
+}
+
+#[test]
+fn factories_hand_readers_to_other_threads() {
+    let log = drops();
+    let generations = Generations::new(Tag::new(1, &log));
+    let factory = generations.factory();
+    let stop = AtomicBool::new(false);
+    std::thread::scope(|s| {
+        for _ in 0..3 {
+            let stop = &stop;
+            s.spawn(move || {
+                let mut reader = factory.reader();
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = reader.live();
+                    reader.idle();
+                    std::thread::yield_now();
+                }
+            });
+        }
+        let deadline = Instant::now() + Duration::from_secs(30);
+        for n in 2..50 {
+            generations.offer(Tag::new(n, &log));
+            while !matches!(generations.step(), Stepped::Idle) {
+                assert!(
+                    Instant::now() < deadline,
+                    "the workers never let a generation through"
+                );
+                std::thread::yield_now();
+            }
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    assert_eq!(generations.newest(), 49);
+}

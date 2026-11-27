@@ -247,6 +247,37 @@ pub struct Generations<T: Send + Sync> {
     workers: Mutex<Vec<Arc<Progress>>>,
     state: RefCell<Published<T>>,
     selector: Arc<AtomicU8>,
+    /// The latest tables offered and not yet begun: a newer offer replaces it (updates
+    /// coalesce while two generations are live, I4).
+    pending: RefCell<Option<T>>,
+    policy: Policy,
+}
+
+/// How workers acknowledge a flip.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Policy {
+    /// Hardware stamps nothing (offload off): every packet runs under the newest generation a
+    /// worker read, so a worker acknowledges at its first burst boundary after the flip.
+    pub software: bool,
+    /// Consecutive empty polls after the flip before an idle worker acknowledges: a packet
+    /// stamped just before the flip may reach the queue just after a poll found it empty
+    /// (GENERATIONS.md §3 step 4: a grace window).
+    pub idle_grace: u32,
+}
+
+/// What [`Generations::step`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stepped {
+    /// Nothing to do: one generation live, nothing offered.
+    Idle,
+    /// Published the offered tables as this generation.
+    Began(u64),
+    /// Turned the selector to this generation.
+    Flipped(u64),
+    /// Released the previous generation; this one is now alone.
+    Retired(u64),
+    /// Waiting on the workers.
+    Waiting(Wait),
 }
 
 /// The publisher's view of what is live.
@@ -290,7 +321,54 @@ impl<T: Send + Sync> Generations<T> {
                 flipped: true,
             }),
             selector,
+            pending: RefCell::new(None),
+            policy: Policy::default(),
         }
+    }
+
+    /// The same, with workers acknowledging by `policy`. Before any reader exists.
+    #[must_use]
+    pub fn with_policy(mut self, policy: Policy) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    /// Offer `tables` as the next generation, to be begun by [`Generations::step`]. A newer offer
+    /// replaces one not yet begun.
+    pub fn offer(&self, tables: T) {
+        *self.pending.borrow_mut() = Some(tables);
+    }
+
+    /// Whether tables are offered and not yet begun.
+    pub fn pending(&self) -> bool {
+        self.pending.borrow().is_some()
+    }
+
+    /// Take one step towards the offered tables being the only live generation: flip if a
+    /// generation is begun and not flipped to, retire if flipped and the previous is still live,
+    /// else begin the offered tables. Call it again until [`Stepped::Idle`]; a
+    /// [`Stepped::Waiting`] waits on the workers (a stuck worker is the watchdog's fault).
+    pub fn step(&self) -> Stepped {
+        let (draining, flipped) = {
+            let state = self.state.borrow();
+            (state.previous.is_some(), state.flipped)
+        };
+        let newest = self.newest();
+        if !flipped {
+            return self
+                .flip()
+                .map_or_else(Stepped::Waiting, |()| Stepped::Flipped(newest));
+        }
+        if draining {
+            return self
+                .retire()
+                .map_or_else(Stepped::Waiting, |()| Stepped::Retired(newest));
+        }
+        let Some(tables) = self.pending.borrow_mut().take() else {
+            return Stepped::Idle;
+        };
+        self.begin(tables)
+            .map_or_else(Stepped::Waiting, Stepped::Began)
     }
 
     /// Publish `tables` as the next generation, in the bank the newest is not in. Workers can
@@ -380,20 +458,17 @@ impl<T: Send + Sync> Generations<T> {
 
     /// A reader for one worker. It must live on one thread, and read once per burst.
     pub fn reader(&self) -> Reader<'_, T> {
-        let progress = Arc::new(Progress::default());
-        let mut workers = self.workers.lock();
-        workers.retain(|p| Arc::strong_count(p) > 1);
-        workers.push(Arc::clone(&progress));
-        drop(workers);
-        let mut reader = Reader {
-            subscriber: self.channel.factory().subscriber(),
-            progress,
-            last: Last::default(),
-        };
-        // Registered now, so observed now: a worker that never reads must not see a generation
-        // it was never shown, but nor may it hold up one published before it existed.
-        let _ = reader.live();
-        reader
+        self.factory().reader()
+    }
+
+    /// Readers for workers on other threads: `Send`, `Sync` and `Copy`, borrowing the
+    /// publisher, so no reader outlives it (`quiescent`'s lifetime invariant).
+    pub fn factory(&self) -> ReaderFactory<'_, T> {
+        ReaderFactory {
+            subscribers: self.channel.factory(),
+            workers: &self.workers,
+            policy: self.policy,
+        }
     }
 
     fn all(&self, done: impl Fn(&Progress) -> bool) -> bool {
@@ -408,6 +483,44 @@ impl<T: Send + Sync> Generations<T> {
             previous: state.previous.clone(),
             flipped: state.flipped,
         });
+    }
+}
+
+/// Makes [`Reader`]s, on any thread.
+pub struct ReaderFactory<'p, T: Send + Sync> {
+    subscribers: quiescent::SubscriberFactory<'p, Live<T>>,
+    workers: &'p Mutex<Vec<Arc<Progress>>>,
+    policy: Policy,
+}
+
+impl<T: Send + Sync> Clone for ReaderFactory<'_, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<T: Send + Sync> Copy for ReaderFactory<'_, T> {}
+
+impl<'p, T: Send + Sync> ReaderFactory<'p, T> {
+    /// A reader for one worker, on the calling thread. It must read once per burst.
+    #[must_use]
+    pub fn reader(&self) -> Reader<'p, T> {
+        let progress = Arc::new(Progress::default());
+        let mut workers = self.workers.lock();
+        workers.retain(|p| Arc::strong_count(p) > 1);
+        workers.push(Arc::clone(&progress));
+        drop(workers);
+        let mut reader = Reader {
+            subscriber: self.subscribers.subscriber(),
+            progress,
+            last: Last::default(),
+            policy: self.policy,
+            idle: std::cell::Cell::new(0),
+        };
+        // Registered now, so observed now: a worker that never reads must not see a generation
+        // it was never shown, but nor may it hold up one published before it existed.
+        let _ = reader.live();
+        reader
     }
 }
 
@@ -437,12 +550,18 @@ pub struct Reader<'p, T: Send + Sync> {
     subscriber: Subscriber<'p, Live<T>>,
     progress: Arc<Progress>,
     last: Last,
+    policy: Policy,
+    /// Consecutive empty polls since the flip.
+    idle: std::cell::Cell<u32>,
 }
 
 impl<T: Send + Sync> Reader<'_, T> {
     /// The live generations, for one burst. Observes the newest.
     pub fn live(&mut self) -> &Live<T> {
         let live = self.subscriber.snapshot();
+        if live.newest.generation != self.last.newest || live.flipped != self.last.flipped {
+            self.idle.set(0);
+        }
         self.last = Last {
             newest: live.newest.generation,
             previous: live.previous.is_some(),
@@ -461,18 +580,28 @@ impl<T: Send + Sync> Reader<'_, T> {
     /// A later straggler is stale once the previous generation retires, and is dropped.
     ///
     /// Unstamped packets prove nothing: older stamped ones may still be queued behind them.
+    /// In software mode ([`Policy::software`]) nothing is stamped, and every packet runs under
+    /// the newest generation read: the first burst after the flip acknowledges.
     pub fn settle(&self, seen: Seen) {
+        self.idle.set(0);
         let last = self.last;
-        if last.flipped && (!last.previous || (seen.newest > 0 && seen.previous == 0)) {
+        let through = self.policy.software || seen.newest > 0 && seen.previous == 0;
+        if last.flipped && (!last.previous || through) {
             self.acknowledge(last.newest);
         }
     }
 
-    /// After an empty poll: the queue held nothing, so nothing stamped before the flip is left.
-    /// An idle worker must not hold up updates.
+    /// After an empty poll: the queue held nothing, so nothing stamped before the flip is left,
+    /// once [`Policy::idle_grace`] more empty polls have passed (a packet stamped just before the
+    /// flip may still be on its way to the queue). An idle worker must not hold up updates.
     pub fn idle(&self) {
         let last = self.last;
-        if last.flipped {
+        if !last.flipped {
+            return;
+        }
+        let polls = self.idle.get().saturating_add(1);
+        self.idle.set(polls);
+        if polls > self.policy.idle_grace {
             self.acknowledge(last.newest);
         }
     }
