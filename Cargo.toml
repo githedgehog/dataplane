@@ -47,6 +47,7 @@ members = [
     "nic-offload",
     "pipeline",
     "pkt-io",
+    "planner",
     "policer",
     "rate-limit",
     "rekon",
@@ -130,6 +131,7 @@ nat = { path = "./nat", package = "dataplane-nat", features = [] }
 net = { path = "./net", package = "dataplane-net", features = [] }
 nic-offload = { path = "./nic-offload", package = "dataplane-nic-offload", features = [] }
 pipeline = { path = "./pipeline", package = "dataplane-pipeline", features = [] }
+planner = { path = "./planner", package = "dataplane-planner", features = [] }
 pkt-io = { path = "./pkt-io", package = "dataplane-pkt-io", features = [] }
 policer = { path = "./policer", package = "dataplane-policer", features = [] }
 rate-limit = { path = "./rate-limit", package = "dataplane-rate-limit", features = [] }

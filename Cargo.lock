@@ -2186,6 +2186,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "dataplane-planner"
+version = "0.39.0"
+
+[[package]]
 name = "dataplane-policer"
 version = "0.39.0"
 dependencies = [
