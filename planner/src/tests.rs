@@ -739,3 +739,69 @@ mod versioned {
         }
     }
 }
+
+/// How much of the planning cost is port ranges: the range-bearing families replanned with each
+/// port range replaced by its first port (`exact`) or by any port (`any`), everything else kept.
+/// The variants mean other things than the originals; each is checked against its own first
+/// match. Run with
+/// `cargo test -p dataplane-planner --release port_ranges -- --ignored --nocapture`.
+#[test]
+#[ignore = "a measurement"]
+fn port_ranges() {
+    use crate::rules::Set;
+    #[derive(Clone, Copy, Debug)]
+    enum Ports {
+        Ranges,
+        Exact,
+        Any,
+    }
+    let variant = |table: &Table<Verdict>, ports: Ports| -> Table<Verdict> {
+        let mut t = table.clone();
+        for rule in &mut t.rules {
+            for f in [3, 4] {
+                let set = &rule.matches[f];
+                if set.is_any(16) || set.intervals().len() != 1 {
+                    continue;
+                }
+                let iv = set.intervals()[0];
+                if iv.lo == iv.hi {
+                    continue;
+                }
+                rule.matches[f] = match ports {
+                    Ports::Ranges => set.clone(),
+                    Ports::Exact => Set::exact(iv.lo),
+                    Ports::Any => Set::any(16),
+                };
+            }
+        }
+        t
+    };
+    for family in [Family::Ranges, Family::Mixed] {
+        for n in [100, 1000, 10_000] {
+            let base = acl(family, n, 1);
+            for ports in [Ports::Ranges, Ports::Exact, Ports::Any] {
+                let table = variant(&base, ports);
+                let started = std::time::Instant::now();
+                match plan(&table, &Options::default()) {
+                    Ok((p, stages)) => {
+                        let joined = stages.iter().any(|s| s.name == "join");
+                        let classes: Vec<String> = stages
+                            .iter()
+                            .filter(|s| s.name != "join")
+                            .map(|s| format!("{}={}", s.name, s.classes))
+                            .collect();
+                        eprintln!(
+                            "{family:?} {n} {ports:?}: worst={:?} entries={} join={joined} in {:?}; mismatches={}\n    classes: {}",
+                            p.worst_path(),
+                            p.entries(),
+                            started.elapsed(),
+                            check(&table, 10_000),
+                            classes.join(" ")
+                        );
+                    }
+                    Err(e) => eprintln!("{family:?} {n} {ports:?}: refused: {e:?}"),
+                }
+            }
+        }
+    }
+}
