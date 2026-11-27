@@ -367,9 +367,9 @@ fn the_typed_stage_polices_as_the_legacy_one() {
     let mut legacy = RateLimiter::new(legacy_writer.reader());
     let mut stage = RateLimiter::new(typed_writer.reader());
     let want = burst_of(&mut legacy, burst());
-    let got = super::typed(&mut stage, burst(), |stage, burst, all| {
+    let got = super::typed(&mut stage, burst(), |stage, burst, all, limits| {
         let (with_src, _) = burst.split::<dag::kind::SrcVpc, _>(all);
-        let policed = stage.process_sel(burst, with_src);
+        let policed = stage.process_sel(burst, with_src, limits);
         (policed.passed.bits(), policed.dropped.bits())
     });
     assert_eq!(super::outcome(&got), super::outcome(&want));

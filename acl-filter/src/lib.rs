@@ -32,6 +32,7 @@ pub use acl::table::RuleRow;
 use arrayvec::ArrayVec;
 use context::AclTables;
 pub use context::{AclKey, AclKeyRule, LookupResult};
+use dag::generation::Join;
 use dag::{Assign, Burst, Drops, Edit, Emit, Forget, Has, Idx, Sel, kind};
 
 pub struct AclFilter {
@@ -41,6 +42,12 @@ pub struct AclFilter {
 }
 
 impl AclFilter {
+    /// Where this stage reads its tables: the legacy path loads them itself, typed callers pass them.
+    #[must_use]
+    pub fn tables_reader(&self) -> &AclFilterContextReader {
+        &self.tablesr
+    }
+
     #[must_use]
     pub fn new(name: &str, tablesr: AclFilterContextReader) -> Self {
         Self {
@@ -165,13 +172,13 @@ impl AclFilter {
         &mut self,
         burst: &mut Burst<'b, Buf>,
         input: Sel<'b, S>,
+        context: &'b AclFilterContext,
     ) -> Filtered<'b, S>
     where
         Buf: PacketBufferMut,
         S: Has<kind::SrcVpc> + Has<kind::DstVpc> + Edit<kind::OpeningTcpFlags>,
     {
-        let guard = self.tablesr.load();
-        let tables = &guard.acls;
+        let tables = &context.acls;
         let genid = self.pipeline_data.genid();
         let mut allowed = Emit::<S, Assign<kind::OpeningTcpFlags>>::new();
         let mut dropped = Drops::none();
@@ -366,6 +373,15 @@ pub struct Filtered<'b, S: Edit<kind::OpeningTcpFlags>> {
     pub allowed: Sel<'b, Forget<S, kind::OpeningTcpFlags>>,
     /// Denied, or not filterable (malformed, not IP).
     pub dropped: Drops<'b>,
+}
+
+impl<S: Edit<kind::OpeningTcpFlags>> Join for Filtered<'_, S> {
+    fn join(self, other: Self) -> Self {
+        Filtered {
+            allowed: self.allowed.union(other.allowed),
+            dropped: self.dropped.join(other.dropped),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

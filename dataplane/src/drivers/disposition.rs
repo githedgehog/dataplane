@@ -69,7 +69,8 @@ impl From<DoneReason> for Disposition {
             | DoneReason::InternalDrop
             | DoneReason::DeparseError
             | DoneReason::NoBuffRoom
-            | DoneReason::NoBuffRoomXmit => Disposition::Drop,
+            | DoneReason::NoBuffRoomXmit
+            | DoneReason::StaleGeneration => Disposition::Drop,
         }
     }
 }
@@ -153,6 +154,7 @@ mod test {
             (DoneReason::DeparseError, Disposition::Drop),
             (DoneReason::NoBuffRoom, Disposition::Drop),
             (DoneReason::NoBuffRoomXmit, Disposition::Drop),
+            (DoneReason::StaleGeneration, Disposition::Drop),
         ];
 
         for (verdict, expected) in table {

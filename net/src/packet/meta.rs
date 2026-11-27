@@ -17,6 +17,7 @@ use concurrency::sync::Arc;
 use serde::Serialize;
 use std::fmt::Display;
 use std::net::IpAddr;
+use std::num::NonZero;
 use strum_macros::{EnumCount, EnumIter, FromRepr, IntoStaticStr};
 use tracing::error;
 
@@ -125,6 +126,7 @@ pub enum DoneReason {
     DeparseError, /* the packet was delivered to driver, but not sent due to serialization issue */
     NoBuffRoomXmit, /* the packet was delivered to driver, but not serialized due to lack of buffer headroom */
     NoBuffRoom, /* the packet had to be dropped due to lack of buffer room (e.g. when rebuffering) */
+    StaleGeneration, /* stamped with a configuration generation no longer live */
 }
 
 bitflags! {
@@ -152,6 +154,84 @@ const _: () = assert!(
     "two MetaFlags flags share a bit"
 );
 
+/// One of the two banks a configuration generation can occupy, in hardware and software alike
+/// (`notes/match-action-dag/GENERATIONS.md`).
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Bank {
+    /// Bank A.
+    A,
+    /// Bank B.
+    B,
+}
+
+impl Bank {
+    /// The other bank.
+    #[must_use]
+    pub const fn other(self) -> Bank {
+        match self {
+            Bank::A => Bank::B,
+            Bank::B => Bank::A,
+        }
+    }
+}
+
+/// The generation a packet was classified under, as hardware stamps it: the bank, and the low
+/// bits of the generation, which catch a straggler stamped before its bank was reused.
+///
+/// One byte, never zero, so that `Option<Stamp>` is one byte too: the bank in the top bit, a
+/// marker bit, and the generation's low six bits. Simulated in software until hardware writes one.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Stamp(NonZero<u8>);
+
+impl Stamp {
+    const BANK: u8 = 0x80;
+    const MARKER: u8 = 0x40;
+    const LOW: u8 = 0x3f;
+
+    /// The stamp of `generation` in `bank`.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)] // the low bits are the point
+    pub const fn new(bank: Bank, generation: u64) -> Stamp {
+        let low = (generation as u8) & Self::LOW;
+        let bits = match bank {
+            Bank::A => low | Self::MARKER,
+            Bank::B => low | Self::MARKER | Self::BANK,
+        };
+        match NonZero::new(bits) {
+            Some(bits) => Stamp(bits),
+            None => unreachable!(),
+        }
+    }
+
+    /// As one byte, never zero.
+    #[must_use]
+    pub const fn to_bits(self) -> u8 {
+        self.0.get()
+    }
+
+    /// From [`Stamp::to_bits`]: `None` for a byte no stamp encodes to.
+    #[must_use]
+    pub const fn from_bits(bits: u8) -> Option<Stamp> {
+        if bits & Self::MARKER == 0 {
+            return None;
+        }
+        match NonZero::new(bits) {
+            Some(bits) => Some(Stamp(bits)),
+            None => None,
+        }
+    }
+
+    /// The bank.
+    #[must_use]
+    pub const fn bank(self) -> Bank {
+        if self.0.get() & Self::BANK == 0 {
+            Bank::A
+        } else {
+            Bank::B
+        }
+    }
+}
+
 #[allow(unused)]
 #[derive(Debug, Default, Clone)]
 pub struct PacketMeta {
@@ -170,6 +250,7 @@ pub struct PacketMeta {
     pub flow_key: Option<Box<FlowKey>>,   /* the flow key to use for NAT flow creation */
     pub tcp_flags: Option<TcpFlags>,      /* TCP flags seen by the ACL stage, for new flows */
     pub syn_proxy: Option<Arc<SynProxyState>>, /* state for new flows set up by the SYN proxy */
+    pub stamp: Option<Stamp>, /* the configuration generation hardware classified it under, if any */
     #[cfg(feature = "test_meta")]
     pub test: Option<Box<TestMeta>>,
 }

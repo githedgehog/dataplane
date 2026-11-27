@@ -12,6 +12,7 @@ use crate::rules::{Action, Enforcement, RateLimitReader, RateLimits};
 use clock::Instant;
 use concurrency::sync::Arc;
 use config::external::overlay::ratelimit::ColorAction;
+use dag::generation::Join;
 use dag::{Burst, Drops, Emit, Has, Keep, Meta, Sel, State, kind};
 use net::buffer::PacketBufferMut;
 use net::headers::{Net, TryIpMut};
@@ -68,6 +69,12 @@ impl<C> RateLimiter<C> {
             dropped: HashMap::new(),
             rule_drops: Vec::new(),
         }
+    }
+
+    /// Where this stage reads its rules: the legacy path loads them itself, typed callers pass them.
+    #[must_use]
+    pub fn reader(&self) -> &RateLimitReader<C> {
+        &self.reader
     }
 
     /// Follow `limits`, keeping this worker's lease and counts of every meter that carries over.
@@ -186,10 +193,10 @@ impl<C: Classify> RateLimiter<C> {
         &mut self,
         burst: &mut Burst<'b, Buf>,
         input: Sel<'b, S>,
+        limits: &Arc<RateLimits<C>>,
         vpcs: impl Fn(&Meta<'_, S>) -> Vpcs,
     ) -> Policed<'b, S> {
-        let limits = self.reader.load();
-        self.follow(&limits);
+        self.follow(limits);
         if limits.rules.is_empty() {
             return Policed {
                 passed: input,
@@ -201,7 +208,7 @@ impl<C: Classify> RateLimiter<C> {
         let now = clock::now();
         for i in input {
             let vpcs = vpcs(&burst.meta(&i));
-            match self.police(&limits, burst.packet_mut(&i), vpcs, now) {
+            match self.police(limits, burst.packet_mut(&i), vpcs, now) {
                 None => passed.push(i),
                 Some(reason) => burst.drop(&mut dropped, i, reason),
             }
@@ -227,14 +234,24 @@ pub struct Policed<'b, S> {
     pub dropped: Drops<'b>,
 }
 
+impl<S: State> Join for Policed<'_, S> {
+    fn join(self, other: Self) -> Self {
+        Policed {
+            passed: self.passed.union(other.passed),
+            dropped: self.dropped.join(other.dropped),
+        }
+    }
+}
+
 impl RateLimiter<IngressRules> {
     /// The gateway's ingress policy, on packets whose source VPC is known.
     pub fn process_sel<'b, Buf: PacketBufferMut, S: Has<kind::SrcVpc>>(
         &mut self,
         burst: &mut Burst<'b, Buf>,
         input: Sel<'b, S>,
+        limits: &'b Arc<RateLimits<IngressRules>>,
     ) -> Policed<'b, S> {
-        self.run(burst, input, |meta| Vpcs {
+        self.run(burst, input, limits, |meta| Vpcs {
             src: Some(vni(*meta.get::<kind::SrcVpc>())),
             dst: None,
         })
@@ -247,12 +264,13 @@ impl RateLimiter<PeeringRules> {
         &mut self,
         burst: &mut Burst<'b, Buf>,
         input: Sel<'b, S>,
+        limits: &'b Arc<RateLimits<PeeringRules>>,
     ) -> Policed<'b, S>
     where
         Buf: PacketBufferMut,
         S: Has<kind::SrcVpc> + Has<kind::DstVpc>,
     {
-        self.run(burst, input, |meta| Vpcs {
+        self.run(burst, input, limits, |meta| Vpcs {
             src: Some(vni(*meta.get::<kind::SrcVpc>())),
             dst: Some(vni(*meta.get::<kind::DstVpc>())),
         })

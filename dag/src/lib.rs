@@ -30,16 +30,20 @@
 //! - **[`Idx`] is a linear capability for one packet.** It is not `Copy`; emitting it consumes it.
 //!   That is what keeps a Present claim true when it is read: a stale one would panic.
 //! - **Joins meet** ([`Sel::join`]); **guards narrow** ([`Burst::split`]).
+//! - **Each packet runs under one configuration generation** ([`generation`]): nodes that read
+//!   tables get them as arguments, once per live generation in their selection.
 //!
 //! The kinds list is closed ([`kind`]). No `unsafe`.
 
 mod burst;
 mod columns;
+pub mod generation;
 mod meta;
 mod presence;
 
 pub use burst::{
     Assign, Burst, Drops, Emit, Idx, Iter, Keep, Op, Sel, Split, Write, partitions, scope,
+    scope_with,
 };
 pub use meta::{
     Absent, Edit, Forget, Fresh, Has, Kind, Lacks, Mark, Meet, Meta, MetaMut, Opaque, Present, Set,

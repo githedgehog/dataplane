@@ -675,8 +675,8 @@ fn outcome(packets: &[Packet<TestBuffer>]) -> Vec<(Option<DoneReason>, Headers)>
         .collect()
 }
 
-/// Run `stage`'s typed entry over `packets`, as a composite hosts it: import the kinds, narrow to
-/// what the stage needs, export.
+/// Run `stage`'s typed entry over `packets`, as a composite hosts it: scan, narrow to what the
+/// stage needs, and hand it the rules its reader publishes, as one generation.
 fn typed<C>(
     stage: &mut RateLimiter<C>,
     mut packets: Vec<Packet<TestBuffer>>,
@@ -684,13 +684,17 @@ fn typed<C>(
         &mut RateLimiter<C>,
         &mut dag::Burst<'b, TestBuffer>,
         dag::Sel<'b, dag::Opaque>,
+        &'b concurrency::sync::Arc<crate::rules::RateLimits<C>>,
     ) -> (u64, u64),
 ) -> Vec<Packet<TestBuffer>> {
+    use dag::generation::{Snapshot, Tables};
     let input = packets.len();
-    let (passed, dropped) = dag::scope(&mut packets, |mut burst, all| {
-        let all = burst.scan(all);
-        run(stage, &mut burst, all)
-    });
+    let snapshot = Snapshot::new(1, net::packet::Bank::A, stage.reader().load());
+    let (passed, dropped) =
+        dag::scope_with(&mut packets, Tables::only(&snapshot), |mut burst, all, tables| {
+            let all = burst.scan(all);
+            run(stage, &mut burst, all, tables.newest().tables())
+        });
     assert_eq!(passed & dropped, 0);
     assert_eq!((passed | dropped).count_ones() as usize, input);
     packets
@@ -717,10 +721,10 @@ fn the_typed_stage_polices_as_the_legacy_one() {
     let mut legacy = RateLimiter::new(legacy_writer.reader());
     let mut stage = RateLimiter::new(typed_writer.reader());
     let want: Vec<_> = legacy.process(burst()).collect();
-    let got = typed(&mut stage, burst(), |stage, burst, all| {
+    let got = typed(&mut stage, burst(), |stage, burst, all, limits| {
         let (with_src, _) = burst.split::<dag::kind::SrcVpc, _>(all);
         let (both, _) = burst.split::<dag::kind::DstVpc, _>(with_src);
-        let policed = stage.process_sel(burst, both);
+        let policed = stage.process_sel(burst, both, limits);
         (policed.passed.bits(), policed.dropped.bits())
     });
     assert_eq!(outcome(&got), outcome(&want));

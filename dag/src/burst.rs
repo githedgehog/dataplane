@@ -7,6 +7,7 @@
 #![allow(clippy::needless_pass_by_value)]
 
 use crate::MAX_BURST;
+use crate::generation::Tables;
 use crate::meta::{Edit, Forget, Kind, Meet, Meta, MetaMut, Opaque, Set, State, Unset, kind};
 use crate::presence::Presence;
 use net::buffer::PacketBufferMut;
@@ -30,7 +31,7 @@ pub struct Sel<'b, S> {
 }
 
 impl<'b, S: State> Sel<'b, S> {
-    const fn new(bits: u64) -> Self {
+    pub(crate) const fn new(bits: u64) -> Self {
         Sel {
             bits,
             _brand: PhantomData,
@@ -59,6 +60,12 @@ impl<'b, S: State> Sel<'b, S> {
     #[must_use]
     pub const fn len(&self) -> u32 {
         self.bits.count_ones()
+    }
+
+    /// Two disjoint selections in the same state, together: what holds of each holds of both.
+    pub fn union(self, other: Sel<'b, S>) -> Sel<'b, S> {
+        debug_assert_eq!(self.bits & other.bits, 0, "a packet in two live selections");
+        Sel::new(self.bits | other.bits)
     }
 
     /// Merge two disjoint selections, keeping what both prove (the meet).
@@ -142,7 +149,7 @@ impl<S> Idx<'_, S> {
         usize::from(self.index)
     }
 
-    const fn bit(&self) -> u64 {
+    pub(crate) const fn bit(&self) -> u64 {
         1 << self.index
     }
 }
@@ -169,6 +176,8 @@ pub struct Burst<'b, Buf: PacketBufferMut> {
     /// [`Burst::scan_where`], and after a hosted legacy stage), kept in step by every typed
     /// write ([`Emit::push`]). Meaningful only for scanned packets.
     pub(crate) columns: [u64; kind::COUNT],
+    /// The packets that run under the previous generation, as [`Burst::resolve`] found them.
+    pub(crate) previous: u64,
     _brand: Brand<'b>,
 }
 
@@ -184,6 +193,13 @@ pub fn scope<Buf: PacketBufferMut, R>(
     packets: &mut Vec<Packet<Buf>>,
     f: impl for<'b> FnOnce(Burst<'b, Buf>, Sel<'b, Opaque>) -> R,
 ) -> R {
+    let (burst, all) = open(packets);
+    f(burst, all)
+}
+
+/// A burst over `packets`, and a selection of all of them. Private: the brand is unique only
+/// because every caller hands the result straight to a closure generic over `'b`.
+fn open<Buf: PacketBufferMut>(packets: &mut Vec<Packet<Buf>>) -> (Burst<'_, Buf>, Sel<'_, Opaque>) {
     let len = packets.len();
     assert!(len <= MAX_BURST, "a burst of {len} packets");
     let all = if len == MAX_BURST {
@@ -191,14 +207,32 @@ pub fn scope<Buf: PacketBufferMut, R>(
     } else {
         (1u64 << len) - 1
     };
-    f(
+    (
         Burst {
             packets,
             columns: [0; kind::COUNT],
+            previous: 0,
             _brand: PhantomData,
         },
         Sel::new(all),
     )
+}
+
+/// [`scope`], with the burst's tables: borrowed for the burst's lifetime, so that nothing a node
+/// derives from them outlives it, and no selection mixes two bursts' tables.
+///
+/// # Panics
+///
+/// If the burst holds more than [`MAX_BURST`] packets.
+pub fn scope_with<'t, Buf: PacketBufferMut, T, R>(
+    packets: &mut Vec<Packet<Buf>>,
+    tables: Tables<'t, T>,
+    f: impl for<'b> FnOnce(Burst<'b, Buf>, Sel<'b, Opaque>, &'b Tables<'t, T>) -> R,
+) -> R {
+    // `&'b Tables<'t, T>` is well-formed only if `'t: 'b`, which is what lets a node take the
+    // tables at the burst's lifetime.
+    let (burst, all) = open(packets);
+    f(burst, all, &tables)
 }
 
 impl<'b, Buf: PacketBufferMut> Burst<'b, Buf> {

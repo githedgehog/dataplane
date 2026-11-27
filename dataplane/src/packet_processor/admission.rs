@@ -19,15 +19,22 @@
 //! SYN cookie checker). Every drop is an outcome, and the outcomes partition the input
 //! (checked in debug builds). The legacy pipeline with the same stages is the oracle: see the
 //! differential test in `fuzz.rs`.
+//!
+//! **Generations** (`dag::generation`, slice 1 step 2). The typed nodes do not load their tables:
+//! a [`Source`] hands the composite one [`AdmissionTables`] per live generation, each packet runs
+//! under the one its stamp names, and a node with packets of both runs once per generation. The
+//! production source reads today's per-NF readers as a single generation; tests publish through
+//! [`dag::generation::Generations`]. The hosted legacy stages still read their own state.
 
-use acl_filter::AclFilter;
+use acl_filter::{AclFilter, AclFilterContext, AclFilterContextReader};
 use concurrency::sync::Arc;
+use dag::generation::{Reader, Seen, Snapshot, Tables};
 use dag::{Drops, Kind, MAX_BURST, Presence, kind};
-use flow_filter::FlowFilter;
+use flow_filter::{FlowFilter, FlowFilterContext, FlowFilterContextReader};
 use net::buffer::PacketBufferMut;
-use net::packet::{DoneReason, Packet};
+use net::packet::{Bank, DoneReason, Packet};
 use pipeline::{NetworkFunction, PipelineData, SchedRun};
-use rate_limit::{IngressRules, PeeringRules, RateLimiter};
+use rate_limit::{IngressRules, PeeringRules, Policed, RateLimitReader, RateLimiter, RateLimits};
 
 /// How the production pipeline runs the admission stages: `DATAPLANE_ADMISSION_FRAME` =
 /// `legacy` (default: one stage each), `chained` (the same stages chained into one: the control
@@ -56,18 +63,72 @@ impl Frame {
 /// checker set the destination VPC. Debug builds check that they change no other.
 const LEGACY_WRITES: Presence = <kind::DstVpc as Kind>::BIT;
 
+/// What the admission slice's typed nodes read, for one generation. A meter's rules are absent
+/// when it has none: it passes everything.
+#[derive(Debug)]
+pub(crate) struct AdmissionTables {
+    pub(crate) arrived: Option<Arc<RateLimits<IngressRules>>>,
+    pub(crate) flow_filter: Arc<FlowFilterContext>,
+    pub(crate) acl: Arc<AclFilterContext>,
+    pub(crate) accepted: Option<Arc<RateLimits<PeeringRules>>>,
+}
+
+/// Where the composite gets its tables: once per burst, then told what the burst showed.
+pub(crate) trait Source {
+    /// The live generations' tables, for one burst.
+    fn tables(&mut self) -> Tables<'_, AdmissionTables>;
+    /// After a burst (or an empty poll, with nothing seen).
+    fn settle(&mut self, seen: Seen);
+}
+
+/// Today's tables, read from each NF's own reader, as a single generation. What production runs
+/// until a publisher owns the slice's tables (slice 1, step 3).
+pub(crate) struct Current {
+    arrived: Option<RateLimitReader<IngressRules>>,
+    flow_filter: FlowFilterContextReader,
+    acl: AclFilterContextReader,
+    accepted: Option<RateLimitReader<PeeringRules>>,
+    snapshot: Option<Snapshot<AdmissionTables>>,
+}
+
+impl Source for Current {
+    fn tables(&mut self) -> Tables<'_, AdmissionTables> {
+        let tables = AdmissionTables {
+            arrived: self.arrived.as_ref().map(RateLimitReader::load),
+            flow_filter: self.flow_filter.load(),
+            acl: self.acl.load(),
+            accepted: self.accepted.as_ref().map(RateLimitReader::load),
+        };
+        Tables::only(self.snapshot.insert(Snapshot::new(0, Bank::A, tables)))
+    }
+
+    fn settle(&mut self, _: Seen) {}
+}
+
+impl Source for Reader<'_, AdmissionTables> {
+    fn tables(&mut self) -> Tables<'_, AdmissionTables> {
+        self.live().tables()
+    }
+
+    fn settle(&mut self, seen: Seen) {
+        Reader::settle(self, seen);
+    }
+}
+
 /// The admission slice as one stage: arrived meter → (pre) → flow filter → (mid) → ACL →
 /// accepted meter.
-pub(crate) struct Admission<Pre, Mid> {
+pub(crate) struct Admission<Pre, Mid, Src = Current> {
     arrived: Option<RateLimiter<IngressRules>>,
     pre: Pre,
     flow_filter: FlowFilter,
     mid: Mid,
     acl: AclFilter,
     accepted: Option<RateLimiter<PeeringRules>>,
+    source: Src,
 }
 
 impl<Pre, Mid> Admission<Pre, Mid> {
+    /// The slice, reading today's tables through its NFs' own readers.
     pub(crate) fn new(
         arrived: Option<RateLimiter<IngressRules>>,
         pre: Pre,
@@ -76,6 +137,13 @@ impl<Pre, Mid> Admission<Pre, Mid> {
         acl: AclFilter,
         accepted: Option<RateLimiter<PeeringRules>>,
     ) -> Self {
+        let source = Current {
+            arrived: arrived.as_ref().map(|m| m.reader().clone()),
+            flow_filter: flow_filter.tables_reader().clone(),
+            acl: acl.tables_reader().clone(),
+            accepted: accepted.as_ref().map(|m| m.reader().clone()),
+            snapshot: None,
+        };
         Admission {
             arrived,
             pre,
@@ -83,11 +151,72 @@ impl<Pre, Mid> Admission<Pre, Mid> {
             mid,
             acl,
             accepted,
+            source,
         }
     }
 }
 
-impl<Pre, Mid> Admission<Pre, Mid> {
+impl<Pre, Mid, Src> Admission<Pre, Mid, Src> {
+    /// The same slice, with its tables from `source` instead.
+    #[cfg(test)]
+    pub(crate) fn with_source<New: Source>(self, source: New) -> Admission<Pre, Mid, New> {
+        let Admission {
+            arrived,
+            pre,
+            flow_filter,
+            mid,
+            acl,
+            accepted,
+            source: _,
+        } = self;
+        Admission {
+            arrived,
+            pre,
+            flow_filter,
+            mid,
+            acl,
+            accepted,
+            source,
+        }
+    }
+
+    /// An empty poll: lets the source acknowledge a generation with nothing in flight.
+    #[cfg(test)]
+    pub(crate) fn idle(&mut self)
+    where
+        Src: Source,
+    {
+        self.source.settle(Seen::default());
+    }
+}
+
+/// A meter run under one generation's rules: none means none, and it passes everything.
+fn police<'b, Buf, S, C>(
+    meter: &mut RateLimiter<C>,
+    burst: &mut dag::Burst<'b, Buf>,
+    sel: dag::Sel<'b, S>,
+    limits: Option<&'b Arc<RateLimits<C>>>,
+    run: impl FnOnce(
+        &mut RateLimiter<C>,
+        &mut dag::Burst<'b, Buf>,
+        dag::Sel<'b, S>,
+        &'b Arc<RateLimits<C>>,
+    ) -> Policed<'b, S>,
+) -> Policed<'b, S>
+where
+    Buf: PacketBufferMut,
+    S: dag::State,
+{
+    match limits {
+        Some(limits) => run(meter, burst, sel, limits),
+        None => Policed {
+            passed: sel,
+            dropped: Drops::none(),
+        },
+    }
+}
+
+impl<Pre, Mid, Src: Source> Admission<Pre, Mid, Src> {
     /// One burst of at most [`MAX_BURST`] packets.
     fn chunk<Buf>(&mut self, packets: &mut Vec<Packet<Buf>>)
     where
@@ -102,20 +231,35 @@ impl<Pre, Mid> Admission<Pre, Mid> {
             mid,
             acl,
             accepted,
+            source,
         } = self;
-        dag::scope(packets, |mut burst, all| {
+        let tables = source.tables();
+        let seen = dag::scope_with(packets, tables, |mut burst, all, tables| {
+            let tables = *tables;
             // Packets done or not from a VPC are not ours: they are in no edge, and untouched.
             let (live, _) = burst.scan_where(all, |p| !p.is_done() && p.meta().is_overlay());
             let live_bits = live.bits();
+            // Each packet runs under the generation its stamp names; a stale stamp is dropped.
+            let (live, mut dropped, seen) = burst.resolve(live, tables);
 
             // The arrived meter, on packets whose source VPC is known.
             let (known, unknown) = burst.split::<kind::SrcVpc, _>(live);
-            let (arrived_out, mut dropped) = match arrived {
+            let arrived_out = match arrived {
                 Some(meter) => {
-                    let policed = meter.process_sel(&mut burst, known);
-                    (policed.passed, policed.dropped)
+                    let policed = burst.per_generation(
+                        known,
+                        tables,
+                        |t| &t.arrived,
+                        |burst, sel, limits| {
+                            police(meter, burst, sel, limits.as_ref(), |m, b, s, l| {
+                                m.process_sel(b, s, l)
+                            })
+                        },
+                    );
+                    dropped = dropped.join(policed.dropped);
+                    policed.passed
                 }
-                None => (known, Drops::none()),
+                None => known,
             };
             let arrived_out = arrived_out.join(unknown);
 
@@ -127,7 +271,12 @@ impl<Pre, Mid> Admission<Pre, Mid> {
 
             // The flow filter, on packets no earlier stage gave a destination.
             let (placed, unplaced) = burst.split::<kind::DstVpc, _>(looked_up);
-            let routed = flow_filter.process_sel(&mut burst, unplaced);
+            let routed = burst.per_generation(
+                unplaced,
+                tables,
+                |t| &*t.flow_filter,
+                |burst, sel, tables| flow_filter.process_sel(burst, sel, tables),
+            );
             dropped = dropped.join(routed.dropped);
             let placed = routed.routed.join(placed);
 
@@ -147,32 +296,49 @@ impl<Pre, Mid> Admission<Pre, Mid> {
                 burst.drop(&mut unroutable, i, DoneReason::Unroutable);
             }
             dropped = dropped.join(unroutable);
-            let filtered = acl.process_sel(&mut burst, acl_in);
+            let filtered = burst.per_generation(
+                acl_in,
+                tables,
+                |t| &*t.acl,
+                |burst, sel, context| acl.process_sel(burst, sel, context),
+            );
             dropped = dropped.join(filtered.dropped);
 
             // The accepted meter.
-            let (admitted, lost) = match accepted {
+            let admitted = match accepted {
                 Some(meter) => {
-                    let policed = meter.process_sel(&mut burst, filtered.allowed);
-                    (policed.passed, policed.dropped)
+                    let policed = burst.per_generation(
+                        filtered.allowed,
+                        tables,
+                        |t| &t.accepted,
+                        |burst, sel, limits| {
+                            police(meter, burst, sel, limits.as_ref(), |m, b, s, l| {
+                                m.process_sel(b, s, l)
+                            })
+                        },
+                    );
+                    dropped = dropped.join(policed.dropped);
+                    policed.passed
                 }
-                None => (filtered.allowed, Drops::none()),
+                None => filtered.allowed,
             };
-            dropped = dropped.join(lost);
 
             debug_assert!(
                 dag::partitions(live_bits, &[admitted.bits(), dropped.bits()]),
                 "admission's outcomes do not partition its input"
             );
+            seen
         });
+        source.settle(seen);
     }
 }
 
-impl<Buf, Pre, Mid> NetworkFunction<Buf> for Admission<Pre, Mid>
+impl<Buf, Pre, Mid, Src> NetworkFunction<Buf> for Admission<Pre, Mid, Src>
 where
     Buf: PacketBufferMut,
     Pre: NetworkFunction<Buf>,
     Mid: NetworkFunction<Buf>,
+    Src: Source,
 {
     fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
         if burst.len() <= MAX_BURST {

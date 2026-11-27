@@ -58,6 +58,7 @@ impl Display for DoneReason {
             Self::Delivered => f.pad("Delivered"),
 
             Self::NoBuffRoom => f.pad("Not enough buffer room (rebuffering)"),
+            Self::StaleGeneration => f.pad("Stale configuration generation"),
 
             // these occur post delivery, prior to xmit
             Self::NoBuffRoomXmit => f.pad("No headroom to serialize packet on xmit"),

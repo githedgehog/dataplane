@@ -1610,6 +1610,7 @@ name = "dataplane-dag"
 version = "0.39.0"
 dependencies = [
  "bolero",
+ "dataplane-concurrency",
  "dataplane-net",
 ]
 

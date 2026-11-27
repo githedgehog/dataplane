@@ -6,6 +6,7 @@ publish.workspace = true
 version.workspace = true
 
 [dependencies]
+concurrency = { workspace = true }
 net = { workspace = true }
 
 [dev-dependencies]

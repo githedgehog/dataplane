@@ -5,6 +5,7 @@
 
 use concurrency::sync::Arc;
 use config::external::overlay::vpcpeering::{ValidatedExpose, VpcExposeNatConfig};
+use dag::generation::Join;
 use dag::{Burst, Drops, Edit, Emit, Idx, Lacks, Sel, Set, Write, kind};
 use net::FlowKey;
 use net::buffer::PacketBufferMut;
@@ -55,6 +56,12 @@ struct WorkItem {
 }
 
 impl FlowFilter {
+    /// Where this stage reads its tables: the legacy path loads them itself, typed callers pass them.
+    #[must_use]
+    pub fn tables_reader(&self) -> &FlowFilterContextReader {
+        &self.tables
+    }
+
     pub fn new(name: &str, tables: FlowFilterContextReader) -> Self {
         Self {
             name: name.to_string(),
@@ -398,6 +405,7 @@ impl FlowFilter {
         &mut self,
         burst: &mut Burst<'b, Buf>,
         input: Sel<'b, S>,
+        tables: &'b FlowFilterContext,
     ) -> Routed<'b, S>
     where
         Buf: PacketBufferMut,
@@ -424,7 +432,6 @@ impl FlowFilter {
         }
         if !inputs.is_empty() {
             let mut results: Vec<LookupResult> = vec![LookupResult::DestinationMiss; inputs.len()];
-            let tables = self.tables.load();
             tables.lookup_batch(&inputs, &mut results);
             for (((i, flow_summary), result), input) in work.into_iter().zip(results).zip(&inputs) {
                 let track = match result {
@@ -454,6 +461,15 @@ pub struct Routed<'b, S: Edit<kind::DstVpc>> {
     pub routed: Sel<'b, Set<S, kind::DstVpc>>,
     /// Filtered, or not routable.
     pub dropped: Drops<'b>,
+}
+
+impl<S: Edit<kind::DstVpc>> Join for Routed<'_, S> {
+    fn join(self, other: Self) -> Self {
+        Routed {
+            routed: self.routed.union(other.routed),
+            dropped: self.dropped.join(other.dropped),
+        }
+    }
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for FlowFilter {
