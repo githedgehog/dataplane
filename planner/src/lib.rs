@@ -21,6 +21,7 @@
 //! - [`rfc`]: the first strategy, recursive flow classification with verdict-aware truncation.
 //! - [`backend`]: what a plan costs on a backend, and whether it fits (mlx5, software).
 //! - [`guard`]: a plan per tenant behind a guard level, each tenant falling back alone.
+//! - [`shared`]: every tenant in the same levels, so tables don't grow with tenants.
 //! - [`generate`]: seeded ACLs of the hardware spike's families, and probe keys.
 
 pub mod backend;
@@ -29,6 +30,7 @@ pub mod guard;
 pub mod plan;
 pub mod rfc;
 pub mod rules;
+pub mod shared;
 
 #[cfg(test)]
 mod tests;

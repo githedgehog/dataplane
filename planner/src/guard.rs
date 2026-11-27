@@ -65,32 +65,10 @@ pub fn plan<A: Clone + Eq + Hash, B: Backend>(
     backend: &B,
     options: &Options,
 ) -> Result<Guarded<A>, Refusal> {
-    table.check().map_err(Refusal::Malformed)?;
-    let rest: Vec<usize> = (0..table.fields.len())
-        .filter(|f| !guard.contains(f))
-        .collect();
-    let patterns = patterns(table, guard)?;
-    let keys: Vec<Vec<u128>> = patterns
-        .iter()
-        .flatten()
-        .cloned()
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    let sub = |key: Option<&Vec<u128>>| Table {
-        fields: rest.iter().map(|&f| table.fields[f]).collect(),
-        rules: table
-            .rules
-            .iter()
-            .zip(&patterns)
-            .filter(|(_, p)| p.is_none() || p.as_ref() == key)
-            .map(|(r, _)| Rule {
-                matches: rest.iter().map(|&f| r.matches[f].clone()).collect(),
-                action: r.action.clone(),
-            })
-            .collect(),
-        default: table.default.clone(),
-    };
+    let Partition {
+        rest,
+        tenants: parts,
+    } = partition(table, guard)?;
     let guard_key: Vec<Part> = guard
         .iter()
         .map(|&f| Part::Field {
@@ -107,9 +85,9 @@ pub fn plan<A: Clone + Eq + Hash, B: Backend>(
     // Every tenant's plan comes after the guard level.
     let backend = backend.reserving(1);
     let mut registers: BTreeMap<u8, u8> = BTreeMap::new();
-    let mut tenants = Vec::with_capacity(keys.len() + 1);
-    for key in keys.iter().map(Some).chain(std::iter::once(None)) {
-        let table = sub(key);
+    let mut tenants = Vec::new();
+    for (key, table) in parts {
+        let key = key.as_ref();
         let (step, outcome) = match rfc::plan(&table, options) {
             Err(refusal) => (
                 Step::done(Placed::Software),
@@ -149,6 +127,55 @@ pub fn plan<A: Clone + Eq + Hash, B: Backend>(
         },
         tenants,
     })
+}
+
+/// A table split by tenant.
+pub(crate) struct Partition<A> {
+    /// The fields other than the guard's, in order: the sub-tables' fields.
+    pub(crate) rest: Vec<usize>,
+    /// Each tenant's guard values (`None`: packets of no listed tenant) and rules over `rest`.
+    pub(crate) tenants: Vec<(Option<Vec<u128>>, Table<A>)>,
+}
+
+/// Split `table` by the values of its `guard` fields. Rules naming no tenant (any on every
+/// guard field) are in every tenant's table, in order.
+pub(crate) fn partition<A: Clone>(
+    table: &Table<A>,
+    guard: &[usize],
+) -> Result<Partition<A>, Refusal> {
+    table.check().map_err(Refusal::Malformed)?;
+    let rest: Vec<usize> = (0..table.fields.len())
+        .filter(|f| !guard.contains(f))
+        .collect();
+    let patterns = patterns(table, guard)?;
+    let keys: Vec<Vec<u128>> = patterns
+        .iter()
+        .flatten()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let sub = |key: Option<&Vec<u128>>| Table {
+        fields: rest.iter().map(|&f| table.fields[f]).collect(),
+        rules: table
+            .rules
+            .iter()
+            .zip(&patterns)
+            .filter(|(_, p)| p.is_none() || p.as_ref() == key)
+            .map(|(r, _)| Rule {
+                matches: rest.iter().map(|&f| r.matches[f].clone()).collect(),
+                action: r.action.clone(),
+            })
+            .collect(),
+        default: table.default.clone(),
+    };
+    let tenants = keys
+        .iter()
+        .map(Some)
+        .chain(std::iter::once(None))
+        .map(|key| (key.cloned(), sub(key)))
+        .collect();
+    Ok(Partition { rest, tenants })
 }
 
 /// Each rule's guard values: `Some` if all exact, `None` if all any.

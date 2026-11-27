@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
 
 /// A set of rules, by index: bit `i` is rule `i`.
-type Bits = Vec<u64>;
+pub(crate) type Bits = Vec<u64>;
 
 /// A pair of classes enumerated by a combination, and the class it crosses to.
 type Pair = ((u32, u32), u32);
@@ -153,20 +153,32 @@ pub struct Stage {
 }
 
 /// A group of fields looked at, and its classes.
-struct Group {
+pub(crate) struct Group {
     /// Fields covered, as a bit mask.
-    covered: u32,
+    pub(crate) covered: u32,
     /// Class id -> rule set.
-    classes: Vec<Bits>,
+    pub(crate) classes: Vec<Bits>,
     /// The register holding the class id; `None` if there is one class only (nothing to look
     /// up: every packet is in it).
-    reg: Option<Reg>,
+    pub(crate) reg: Option<Reg>,
+}
+
+/// Two fields' classes together, for a fused level.
+pub(crate) struct Fusion {
+    /// Class id -> rule set.
+    pub(crate) classes: Vec<Bits>,
+    /// Each field's values, per its own class.
+    pub(crate) values: [Vec<Vec<Interval>>; 2],
+    /// Per pair of the fields' classes: the class they fuse to, and how many value pairs.
+    pub(crate) cross: Vec<(usize, usize, u32, u128)>,
+    /// The class with the most value pairs: the miss.
+    pub(crate) common: u32,
 }
 
 /// Where a stage's levels go next: patched once the next stage exists.
 const CONTINUE: LevelId = usize::MAX;
 
-struct Planner<'t, A> {
+pub(crate) struct Planner<'t, A> {
     table: &'t Table<A>,
     words: usize,
     options: &'t Options,
@@ -181,7 +193,27 @@ struct Planner<'t, A> {
     total: usize,
 }
 
-impl<A: Clone + Eq + Hash> Planner<'_, A> {
+impl<'t, A: Clone + Eq + Hash> Planner<'t, A> {
+    /// A planner for `table`.
+    pub(crate) fn new(table: &'t Table<A>, options: &'t Options) -> Self {
+        Planner {
+            table,
+            words: table.rules.len().div_ceil(64).max(1),
+            options,
+            levels: Vec::new(),
+            stages: Vec::new(),
+            report: Vec::new(),
+            universal: HashMap::new(),
+            ended: false,
+            total: 0,
+        }
+    }
+
+    /// The table's default action.
+    pub(crate) fn table_default(&self) -> A {
+        self.table.default.clone()
+    }
+
     fn all_fields(&self) -> u32 {
         (1u32 << self.table.fields.len()) - 1
     }
@@ -207,7 +239,7 @@ impl<A: Clone + Eq + Hash> Planner<'_, A> {
     }
 
     /// Cut `bits` after its first rule that holds whatever the fields outside `covered` are.
-    fn truncate(&mut self, mut bits: Bits, covered: u32) -> Bits {
+    pub(crate) fn truncate(&mut self, mut bits: Bits, covered: u32) -> Bits {
         let universal = self.universal_outside(covered);
         if let Some(winner) = first(&and(&bits, universal)) {
             keep_through(&mut bits, winner);
@@ -216,7 +248,7 @@ impl<A: Clone + Eq + Hash> Planner<'_, A> {
     }
 
     /// The action of a class whose fields are all looked at: its first rule's, or the default.
-    fn action_of(&self, bits: &Bits) -> A {
+    pub(crate) fn action_of(&self, bits: &Bits) -> A {
         first(bits).map_or_else(
             || self.table.default.clone(),
             |i| self.table.rules[i].action.clone(),
@@ -241,7 +273,7 @@ impl<A: Clone + Eq + Hash> Planner<'_, A> {
 
     /// Field `f`'s elementary intervals, merged where adjacent ones share a class, and its
     /// classes: a sweep over the boundaries of every rule's intervals on `f`.
-    fn elementary(&mut self, f: usize) -> (Vec<Bits>, Vec<(Interval, u32)>) {
+    pub(crate) fn elementary(&mut self, f: usize) -> (Vec<Bits>, Vec<(Interval, u32)>) {
         let field = self.table.fields[f];
         let covered = 1u32 << f;
         let mut any = vec![0u64; self.words];
@@ -289,6 +321,26 @@ impl<A: Clone + Eq + Hash> Planner<'_, A> {
         (classes, intervals)
     }
 
+    /// Field `f`'s miss: the class with the most entries to spare.
+    pub(crate) fn field_default(&self, f: usize, intervals: &[(Interval, u32)]) -> u32 {
+        let field = self.table.fields[f];
+        let cost = |iv: &Interval| -> u128 {
+            if field.width <= self.options.narrow {
+                iv.hi - iv.lo + 1
+            } else {
+                pieces(iv.lo, iv.hi, field.width).len() as u128
+            }
+        };
+        let mut weight: HashMap<u32, u128> = HashMap::new();
+        for (iv, id) in intervals {
+            *weight.entry(*id).or_default() += cost(iv);
+        }
+        weight
+            .iter()
+            .max_by_key(|(id, w)| (**w, std::cmp::Reverse(**id)))
+            .map_or(0, |(id, _)| *id)
+    }
+
     /// Phase 0 for field `f`: its classes, and the levels that look them up into `reg`.
     fn field(&mut self, f: usize, reg: Reg) -> Group {
         let field = self.table.fields[f];
@@ -308,22 +360,7 @@ impl<A: Clone + Eq + Hash> Planner<'_, A> {
                 reg: None,
             };
         }
-        // The miss: the class with the most entries to spare.
-        let cost = |iv: &Interval| -> u128 {
-            if field.width <= self.options.narrow {
-                iv.hi - iv.lo + 1
-            } else {
-                pieces(iv.lo, iv.hi, field.width).len() as u128
-            }
-        };
-        let mut weight: HashMap<u32, u128> = HashMap::new();
-        for (iv, id) in &intervals {
-            *weight.entry(*id).or_default() += cost(iv);
-        }
-        let default = weight
-            .iter()
-            .max_by_key(|(id, w)| (**w, std::cmp::Reverse(**id)))
-            .map_or(0, |(id, _)| *id);
+        let default = self.field_default(f, &intervals);
         let first_level = self.levels.len();
         let (levels, entries) = self.field_levels(f, reg, &intervals, default);
         self.report.push(Stage {
@@ -340,10 +377,8 @@ impl<A: Clone + Eq + Hash> Planner<'_, A> {
         }
     }
 
-    /// Phase 0 for fields `f` and `g` together: one exact level over both values, into `reg`.
-    /// Entries are the value pairs whose class isn't the most common one, enumerated class pair
-    /// by class pair.
-    fn fused(&mut self, f: usize, g: usize, reg: Reg) -> Group {
+    /// Fields `f` and `g`'s classes together.
+    pub(crate) fn fusion_of(&mut self, f: usize, g: usize) -> Fusion {
         let covered = 1u32 << f | 1u32 << g;
         let (cf, ivf) = self.elementary(f);
         let (cg, ivg) = self.elementary(g);
@@ -379,6 +414,25 @@ impl<A: Clone + Eq + Hash> Planner<'_, A> {
             .iter()
             .max_by_key(|(id, w)| (**w, std::cmp::Reverse(**id)))
             .map_or(0, |(id, _)| *id);
+        Fusion {
+            classes,
+            values: [vf, vg],
+            cross,
+            common,
+        }
+    }
+
+    /// Phase 0 for fields `f` and `g` together: one exact level over both values, into `reg`.
+    /// Entries are the value pairs whose class isn't the most common one, enumerated class pair
+    /// by class pair.
+    fn fused(&mut self, f: usize, g: usize, reg: Reg) -> Group {
+        let covered = 1u32 << f | 1u32 << g;
+        let Fusion {
+            classes,
+            values: [vf, vg],
+            cross,
+            common,
+        } = self.fusion_of(f, g);
         let (wf, wg) = (self.table.fields[f], self.table.fields[g]);
         let key = vec![
             Part::Field {
@@ -420,7 +474,7 @@ impl<A: Clone + Eq + Hash> Planner<'_, A> {
     }
 
     /// The entries [`Planner::fused`] would make for `f` and `g`, without making them.
-    fn fused_entries(&mut self, f: usize, g: usize) -> u128 {
+    pub(crate) fn fused_entries(&mut self, f: usize, g: usize) -> u128 {
         let covered = 1u32 << f | 1u32 << g;
         let (cf, ivf) = self.elementary(f);
         let (cg, ivg) = self.elementary(g);
@@ -465,14 +519,14 @@ impl<A: Clone + Eq + Hash> Planner<'_, A> {
             .map(|(_, g)| (first.min(g), first.max(g)))
     }
 
-    /// One level over every group's register, ending with the action: `None` if its
-    /// enumeration would pass [`Options::max_product`].
-    ///
-    /// The miss is the table's default. A tuple of classes needs an entry only if its first
-    /// shared rule's action isn't the default; such tuples are enumerated rule by rule, from the
-    /// classes holding the rule in each group, and kept only where that rule is the first they
-    /// share. Rules a class truncated away are dead in it, so first shared is first match.
-    fn join(&mut self, groups: &[Group]) -> Option<LevelId> {
+    /// The join's entries: `emit(class per group, action)` for every tuple of classes whose
+    /// first shared rule's action isn't the default. `false` if the enumeration passed
+    /// [`Options::max_product`] or `emit` asked to stop (by returning `false`).
+    pub(crate) fn join_each(
+        &mut self,
+        groups: &[Group],
+        emit: &mut dyn FnMut(&[u32], &A) -> bool,
+    ) -> bool {
         let default = self.table.default.clone();
         // Rule -> the classes holding it, per group.
         let holders: Vec<HashMap<usize, Vec<u32>>> = groups
@@ -491,8 +545,6 @@ impl<A: Clone + Eq + Hash> Planner<'_, A> {
             })
             .collect();
         let mut budget = self.options.max_product;
-        let key: Vec<Part> = groups.iter().filter_map(|g| g.reg.map(Part::Reg)).collect();
-        let mut entries = Entries::for_key(&key, &self.table.fields);
         for (rule, r) in self.table.rules.iter().enumerate() {
             if r.action == default {
                 continue;
@@ -505,23 +557,17 @@ impl<A: Clone + Eq + Hash> Planner<'_, A> {
                 vec![(0, vec![u64::MAX; self.words], Vec::new())];
             while let Some((g, bits, picked)) = stack.pop() {
                 if g == groups.len() {
-                    if first(&bits) == Some(rule) {
-                        let key: Vec<u128> = groups
-                            .iter()
-                            .zip(&picked)
-                            .filter(|(group, _)| group.reg.is_some())
-                            .map(|(_, &id)| u128::from(id))
-                            .collect();
-                        entries.insert(&key, Step::done(r.action.clone()));
-                        if self.total + entries.len() > self.options.max_entries {
-                            return None;
-                        }
+                    if first(&bits) == Some(rule) && !emit(&picked, &r.action) {
+                        return false;
                     }
                     continue;
                 }
                 let covered = groups[..=g].iter().fold(0, |c, group| c | group.covered);
                 for &id in lists[g] {
-                    budget = budget.checked_sub(1)?;
+                    let Some(left) = budget.checked_sub(1) else {
+                        return false;
+                    };
+                    budget = left;
                     let next = and(&bits, &groups[g].classes[id as usize]);
                     let decided = first(&and(&next, self.universal_outside(covered)));
                     if decided.is_some_and(|winner| winner < rule) {
@@ -532,6 +578,34 @@ impl<A: Clone + Eq + Hash> Planner<'_, A> {
                     stack.push((g + 1, next, picked));
                 }
             }
+        }
+        true
+    }
+
+    /// One level over every group's register, ending with the action: `None` if its
+    /// enumeration would pass [`Options::max_product`].
+    ///
+    /// The miss is the table's default. A tuple of classes needs an entry only if its first
+    /// shared rule's action isn't the default; such tuples are enumerated rule by rule, from the
+    /// classes holding the rule in each group, and kept only where that rule is the first they
+    /// share. Rules a class truncated away are dead in it, so first shared is first match.
+    fn join(&mut self, groups: &[Group]) -> Option<LevelId> {
+        let default = self.table.default.clone();
+        let key: Vec<Part> = groups.iter().filter_map(|g| g.reg.map(Part::Reg)).collect();
+        let mut entries = Entries::for_key(&key, &self.table.fields);
+        let budget = self.options.max_entries.saturating_sub(self.total);
+        let done = self.join_each(groups, &mut |picked, action| {
+            let key: Vec<u128> = groups
+                .iter()
+                .zip(picked)
+                .filter(|(group, _)| group.reg.is_some())
+                .map(|(_, &id)| u128::from(id))
+                .collect();
+            entries.insert(&key, Step::done(action.clone()));
+            entries.len() <= budget
+        });
+        if !done {
+            return None;
         }
         let n = entries.len();
         let id = self.push_level(Level {
@@ -739,7 +813,7 @@ impl<A: Clone + Eq + Hash> Planner<'_, A> {
 
     /// The classes two groups cross to, and the pairs enumerated: every pair if `dense`, else
     /// those sharing a non-core rule. Class 0 is the core's.
-    fn cross(
+    pub(crate) fn cross(
         &mut self,
         a: &Group,
         b: &Group,
@@ -857,7 +931,7 @@ impl<A: Clone + Eq + Hash> Planner<'_, A> {
 /// within `cap`, and among those the fewest entries. `counts` is the pieces per length, sorted
 /// by length. The longest length is always a target. A piece of length `l` costs
 /// `2^(t - l)` entries at the shortest target `t >= l`.
-fn expansion_targets(counts: &[(u8, usize)], cap: usize) -> Vec<u8> {
+pub(crate) fn expansion_targets(counts: &[(u8, usize)], cap: usize) -> Vec<u8> {
     let k = counts.len();
     if k == 0 {
         return Vec::new();
@@ -982,17 +1056,7 @@ pub fn plan<A: Clone + Eq + Hash>(
 ) -> Result<(Plan<A>, Vec<Stage>), Refusal> {
     table.check().map_err(Refusal::Malformed)?;
     let fields: Vec<Field> = table.fields.clone();
-    let mut planner = Planner {
-        table,
-        words: table.rules.len().div_ceil(64).max(1),
-        options,
-        levels: Vec::new(),
-        stages: Vec::new(),
-        report: Vec::new(),
-        universal: HashMap::new(),
-        ended: false,
-        total: 0,
-    };
+    let mut planner = Planner::new(table, options);
     let fusion = if options.fuse { planner.fusion() } else { None };
     let mut groups: Vec<Group> = Vec::new();
     for f in 0..fields.len() {

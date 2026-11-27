@@ -82,8 +82,9 @@ impl<A> Step<A> {
     }
 }
 
-/// The bits a class register's value takes in a packed key.
-pub const REGISTER_BITS: u32 = 32;
+/// The bits a class register's value takes in a packed key: class and tenant ids are below
+/// 2^24, so a tenant and four classes pack into 120 bits.
+pub const REGISTER_BITS: u32 = 24;
 
 /// A level's exact entries, compactly: each key packed into one `u128` (its parts' significant
 /// bits, concatenated), each value an index into the level's distinct steps. About 32 bytes an
@@ -91,8 +92,9 @@ pub const REGISTER_BITS: u32 = 32;
 /// of entries, and the test suite has a memory budget (CI: 20 GiB in all).
 #[derive(Clone, Debug)]
 pub struct Entries<A> {
-    /// Per key part: how far right to shift its value, and how many bits it keeps.
-    parts: Vec<(u32, u32)>,
+    /// Per key part: how far right to shift its value, how many bits it keeps, and whether it is
+    /// a register (whose value must fit, not be masked).
+    parts: Vec<(u32, u32, bool)>,
     map: HashMap<u128, u32>,
     steps: Vec<Step<A>>,
     index: HashMap<Step<A>, u32>,
@@ -106,18 +108,18 @@ impl<A> Entries<A> {
     /// If the key is wider than 128 bits.
     #[must_use]
     pub fn for_key(key: &[Part], fields: &[Field]) -> Entries<A> {
-        let parts: Vec<(u32, u32)> = key
+        let parts: Vec<(u32, u32, bool)> = key
             .iter()
             .map(|p| match *p {
                 Part::Field { field, len } => {
                     let width = u32::from(fields[field].width);
                     let len = u32::from(len).min(width);
-                    (width - len, len)
+                    (width - len, len, false)
                 }
-                Part::Reg(_) => (0, REGISTER_BITS),
+                Part::Reg(_) => (0, REGISTER_BITS, true),
             })
             .collect();
-        let bits: u32 = parts.iter().map(|(_, b)| b).sum();
+        let bits: u32 = parts.iter().map(|(_, b, _)| b).sum();
         assert!(bits <= 128, "a key of {bits} bits does not pack into 128");
         Entries {
             parts,
@@ -128,13 +130,19 @@ impl<A> Entries<A> {
     }
 
     /// The packed key of `values`, one per part.
+    ///
+    /// # Panics
+    ///
+    /// If a register's value doesn't fit [`REGISTER_BITS`]: two keys would collide.
     #[must_use]
     pub fn pack(&self, values: &[u128]) -> u128 {
         self.parts
             .iter()
             .zip(values)
-            .fold(0u128, |key, (&(shift, bits), &v)| {
-                let v = (v >> shift) & crate::rules::max_of(u8::try_from(bits).unwrap_or(128));
+            .fold(0u128, |key, (&(shift, bits, reg), &v)| {
+                let max = crate::rules::max_of(u8::try_from(bits).unwrap_or(128));
+                assert!(!reg || v <= max, "a register value {v} past {bits} bits");
+                let v = (v >> shift) & max;
                 if bits == 128 { v } else { key << bits | v }
             })
     }

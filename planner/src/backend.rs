@@ -18,6 +18,8 @@ pub struct Cost {
     pub largest_level: usize,
     /// Class registers written, and the bits each needs (its largest value's).
     pub registers: Vec<u32>,
+    /// Levels in all: each a table (an mlx5 group) of its own.
+    pub groups: usize,
 }
 
 impl Cost {
@@ -45,6 +47,7 @@ impl Cost {
                 .max()
                 .unwrap_or(0),
             registers: registers.into_iter().map(|(_, b)| b).collect(),
+            groups: plan.levels.len(),
         })
     }
 }
@@ -66,6 +69,13 @@ pub enum Unfit {
         /// The largest level.
         have: usize,
         /// What a table holds.
+        cap: usize,
+    },
+    /// More tables than the backend runs at speed.
+    Groups {
+        /// The plan's levels.
+        have: usize,
+        /// The most it runs at speed.
         cap: usize,
     },
     /// More class bits than the registers available.
@@ -103,6 +113,9 @@ pub struct Mlx5 {
     pub tables_per_packet: usize,
     /// Rules per table.
     pub entries_per_table: usize,
+    /// Tables (groups) the port runs at speed: the spike-acl probe saw the CX-8 slow past about
+    /// 16.
+    pub groups: usize,
     /// Bits of metadata registers the plan may use for class ids (TAG registers, less what the
     /// bank bit, trap point and VNI need).
     pub register_bits: u32,
@@ -123,6 +136,7 @@ impl Mlx5 {
         Mlx5 {
             tables_per_packet: tables.max(1),
             entries_per_table: 8 << 20,
+            groups: 16,
             // Eight 32-bit TAG registers, two kept for the bank bit, trap point and VNI.
             register_bits: 6 * 32,
         }
@@ -143,6 +157,12 @@ impl Backend for Mlx5 {
             return Err(Unfit::Path {
                 have: cost.worst_path,
                 budget: self.tables_per_packet,
+            });
+        }
+        if cost.groups > self.groups {
+            return Err(Unfit::Groups {
+                have: cost.groups,
+                cap: self.groups,
             });
         }
         if cost.largest_level > self.entries_per_table {

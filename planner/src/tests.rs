@@ -234,9 +234,19 @@ mod guarded {
             .filter(|t| t.outcome.is_err())
             .filter_map(|t| t.key.clone())
             .collect();
+        let listed: Vec<Vec<u128>> = guarded
+            .tenants
+            .iter()
+            .filter_map(|t| t.key.clone())
+            .collect();
+        let unlisted_software = guarded
+            .tenants
+            .iter()
+            .any(|t| t.key.is_none() && t.outcome.is_err());
         for key in probes(&table, &mut Lcg::new(11), 20_000) {
             let got = guarded.plan.run(&key).action;
-            if software.contains(&key[..2].to_vec()) {
+            let guard = key[..2].to_vec();
+            if software.contains(&guard) || (unlisted_software && !listed.contains(&guard)) {
                 assert_eq!(got, Placed::Software, "key {key:x?}");
             } else {
                 assert_eq!(got, Placed::Here(*table.first_match(&key)), "key {key:x?}");
@@ -347,6 +357,124 @@ fn mixed_join() {
                 }
             }
             Err(e) => eprintln!("mixed {n}: {e:?}"),
+        }
+    }
+}
+
+mod shared {
+    use crate::backend::{Backend, Mlx5, Software, closed};
+    use crate::generate::{Family, Lcg, probes, tenants};
+    use crate::guard::Placed;
+    use crate::rfc::Options;
+    use crate::shared::plan;
+
+    const GUARD: [usize; 2] = [0, 1];
+
+    fn check<B: Backend>(specs: &[(Family, usize)], backend: &B) -> (usize, usize, usize) {
+        let table = tenants(specs, 3);
+        let shared = plan(&table, &GUARD, backend, &Options::default()).expect("a plan");
+        assert!(closed(&shared.plan));
+        let software: Vec<Vec<u128>> = shared
+            .tenants
+            .iter()
+            .filter(|t| t.outcome.is_err())
+            .filter_map(|t| t.key.clone())
+            .collect();
+        let listed: Vec<Vec<u128>> = shared
+            .tenants
+            .iter()
+            .filter_map(|t| t.key.clone())
+            .collect();
+        // Packets of no listed tenant: whether their partition fell back.
+        let unlisted_software = shared
+            .tenants
+            .iter()
+            .any(|t| t.key.is_none() && t.outcome.is_err());
+        for key in probes(&table, &mut Lcg::new(11), 30_000) {
+            let got = shared.plan.run(&key).action;
+            let guard = key[..2].to_vec();
+            if software.contains(&guard) || (unlisted_software && !listed.contains(&guard)) {
+                assert_eq!(got, Placed::Software, "key {key:x?}");
+            } else {
+                assert_eq!(got, Placed::Here(*table.first_match(&key)), "key {key:x?}");
+            }
+        }
+        let here = shared.tenants.iter().filter(|t| t.outcome.is_ok()).count();
+        (here, shared.tenants.len() - here, shared.plan.levels.len())
+    }
+
+    #[test]
+    fn tenants_share_levels_and_plan_exactly() {
+        let specs = [
+            (Family::Exact, 30),
+            (Family::Mixed, 60),
+            (Family::Ranges, 40),
+            (Family::Prefixes, 50),
+            (Family::Exact, 20),
+        ];
+        let (here, software, groups) = check(&specs, &Software);
+        assert_eq!(software, 0);
+        assert_eq!(here, specs.len() + 1);
+        // Twice the tenants, the same levels.
+        let doubled: Vec<_> = specs.iter().chain(&specs).copied().collect();
+        let (_, _, more) = check(&doubled, &Software);
+        assert_eq!(groups, more, "levels grew with tenants");
+        // A tight budget sends whole chains to software, and only their tenants.
+        let tight = Mlx5 {
+            tables_per_packet: 4,
+            ..Mlx5::at(44e6)
+        };
+        let _ = check(&specs, &tight);
+    }
+
+    /// The multi-tenant measurement of `guarded_sizes`, shared. Run with
+    /// `cargo test -p dataplane-planner --release shared_sizes -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a measurement"]
+    fn shared_sizes() {
+        let mut specs = vec![(Family::Exact, 100); 40];
+        specs.extend([(Family::Prefixes, 100); 40]);
+        specs.extend([(Family::Mixed, 100); 20]);
+        specs.push((Family::Mixed, 10_000));
+        specs.push((Family::Ranges, 10_000));
+        let table = tenants(&specs, 5);
+        for (name, backend) in [("120 Mpps", Mlx5::at(120e6)), ("44 Mpps", Mlx5::at(44e6))] {
+            let started = std::time::Instant::now();
+            let shared = plan(&table, &GUARD, &backend, &Options::default()).expect("a plan");
+            let here = shared.tenants.iter().filter(|t| t.outcome.is_ok()).count();
+            eprintln!(
+                "{name} (budget {} tables, {} groups): {} tenants, {here} in NIC, {} levels in all, entries {}, in {:?}",
+                backend.tables_per_packet,
+                backend.groups,
+                shared.tenants.len(),
+                shared.plan.levels.len(),
+                shared.plan.entries(),
+                started.elapsed()
+            );
+            for (chain, n, cost) in &shared.chains {
+                eprintln!(
+                    "    chain {chain}: {n} tenants: {:?}",
+                    cost.as_ref()
+                        .map(|c| (c.worst_path, c.groups, c.entries, c.largest_level))
+                );
+            }
+            let mut fallbacks = std::collections::BTreeMap::<String, usize>::new();
+            for t in shared.tenants.iter().filter(|t| t.outcome.is_err()) {
+                let why = format!("{:?}", t.outcome.as_ref().err());
+                *fallbacks.entry(why.chars().take(90).collect()).or_default() += 1;
+            }
+            for (why, n) in fallbacks {
+                eprintln!("    software x{n}: {why}");
+            }
+            let mut rng = Lcg::new(1);
+            let mismatches = probes(&table, &mut rng, 30_000)
+                .iter()
+                .filter(|key| match shared.plan.run(key).action {
+                    Placed::Here(a) => a != *table.first_match(key),
+                    Placed::Software => false,
+                })
+                .count();
+            eprintln!("    mismatches: {mismatches}");
         }
     }
 }
