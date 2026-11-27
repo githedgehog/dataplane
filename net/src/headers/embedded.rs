@@ -127,6 +127,11 @@ impl EmbeddedHeaders {
         self.full_payload_length
     }
 
+    #[cfg(test)]
+    pub(crate) fn set_payload_length(&mut self, full_payload_length: Option<u16>) {
+        self.full_payload_length = full_payload_length;
+    }
+
     #[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
     pub fn check_full_payload(
         &mut self,
