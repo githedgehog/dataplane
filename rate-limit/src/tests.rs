@@ -690,11 +690,14 @@ fn typed<C>(
     use dag::generation::{Snapshot, Tables};
     let input = packets.len();
     let snapshot = Snapshot::new(1, net::packet::Bank::A, stage.reader().load());
-    let (passed, dropped) =
-        dag::scope_with(&mut packets, Tables::only(&snapshot), |mut burst, all, tables| {
+    let (passed, dropped) = dag::scope_with(
+        &mut packets,
+        Tables::only(&snapshot),
+        |mut burst, all, tables| {
             let all = burst.scan(all);
             run(stage, &mut burst, all, tables.newest().tables())
-        });
+        },
+    );
     assert_eq!(passed & dropped, 0);
     assert_eq!((passed | dropped).count_ones() as usize, input);
     packets

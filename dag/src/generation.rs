@@ -160,6 +160,12 @@ impl Join for Drops<'_> {
     }
 }
 
+impl<A: Join, B: Join> Join for (A, B) {
+    fn join(self, other: Self) -> Self {
+        (self.0.join(other.0), self.1.join(other.1))
+    }
+}
+
 impl<'b, Buf: PacketBufferMut> Burst<'b, Buf> {
     /// Resolve the generation of each packet of `sel` from its stamp: the packets that run under
     /// a live generation, and those stale, dropped. Unstamped packets run under the newest.
@@ -448,20 +454,35 @@ impl<T: Send + Sync> Reader<'_, T> {
         live
     }
 
-    /// After a burst: acknowledge the newest generation if hardware stamps it and this burst
-    /// held nothing stamped with the previous one. Stamps are in order to within about two
-    /// packets of a flip (GENERATIONS.md, I2): a clean burst after the flip means the previous
-    /// generation's packets are through. A later straggler is stale once the previous
-    /// generation retires, and dropped.
+    /// After a burst: acknowledge the newest generation once hardware stamps it and the burst
+    /// held a packet stamped with it and none with the previous one. RX queues are FIFO, and
+    /// stamps are in order to within about two packets of a flip (GENERATIONS.md, I2): a packet
+    /// stamped with the newest generation means the packets stamped before the flip are through.
+    /// A later straggler is stale once the previous generation retires, and is dropped.
     ///
-    /// Call it after an empty poll too, with nothing seen: an idle worker must not hold up
-    /// updates.
+    /// Unstamped packets prove nothing: older stamped ones may still be queued behind them.
     pub fn settle(&self, seen: Seen) {
         let last = self.last;
-        if last.flipped && (!last.previous || seen.previous == 0) {
-            self.progress
-                .acknowledged
-                .fetch_max(last.newest, Ordering::Release);
+        if last.flipped && (!last.previous || (seen.newest > 0 && seen.previous == 0)) {
+            self.acknowledge(last.newest);
         }
     }
+
+    /// After an empty poll: the queue held nothing, so nothing stamped before the flip is left.
+    /// An idle worker must not hold up updates.
+    pub fn idle(&self) {
+        let last = self.last;
+        if last.flipped {
+            self.acknowledge(last.newest);
+        }
+    }
+
+    fn acknowledge(&self, generation: u64) {
+        self.progress
+            .acknowledged
+            .fetch_max(generation, Ordering::Release);
+    }
 }
+
+#[cfg(test)]
+mod tests;

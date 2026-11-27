@@ -77,7 +77,8 @@ pub(crate) struct AdmissionTables {
 pub(crate) trait Source {
     /// The live generations' tables, for one burst.
     fn tables(&mut self) -> Tables<'_, AdmissionTables>;
-    /// After a burst (or an empty poll, with nothing seen).
+    /// After a burst. (Empty polls never reach the pipeline: acknowledging on them,
+    /// `dag::generation::Reader::idle`, is for the worker loop to wire, with step 3.)
     fn settle(&mut self, seen: Seen);
 }
 
@@ -178,15 +179,6 @@ impl<Pre, Mid, Src> Admission<Pre, Mid, Src> {
             accepted,
             source,
         }
-    }
-
-    /// An empty poll: lets the source acknowledge a generation with nothing in flight.
-    #[cfg(test)]
-    pub(crate) fn idle(&mut self)
-    where
-        Src: Source,
-    {
-        self.source.settle(Seen::default());
     }
 }
 

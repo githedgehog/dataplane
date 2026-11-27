@@ -64,7 +64,7 @@ pub(crate) enum Enact {
     Everything,
 }
 
-use super::admission::{Admission, Hosted};
+use super::admission::{Admission, AdmissionTables, Hosted, Source};
 use super::egress::Egress;
 use super::ingress::Ingress;
 use super::ipforward::IpForwarder;
@@ -141,8 +141,8 @@ struct Underlay {
     neighbors: NeighCacheReaderFactory,
 }
 
-pub(crate) struct Worker {
-    pipeline: DynPipeline<'static, TestBuffer>,
+pub(crate) struct Worker<'p> {
+    pipeline: DynPipeline<'p, TestBuffer>,
     translations: Arc<Mutex<Translations>>,
     next_id: u64,
 }
@@ -150,7 +150,7 @@ pub(crate) struct Worker {
 pub(crate) struct Fabric {
     _tables: Option<Topology>,
     fleet: Fleet,
-    worker: Worker,
+    worker: Worker<'static>,
 }
 
 impl Fleet {
@@ -372,7 +372,22 @@ impl Blueprint {
             .chain(RateLimiter::new(self.accepted.clone()))
     }
 
-    pub(crate) fn worker(&self) -> Worker {
+    pub(crate) fn worker(&self) -> Worker<'static> {
+        self.worker_from(None::<super::admission::Current>)
+    }
+
+    /// A worker whose admission frame reads its tables from `source` (a generation reader), not
+    /// from its NFs' readers. Only the admission frame reads a source.
+    pub(crate) fn worker_with<'p>(&self, source: impl Source + 'p) -> Worker<'p> {
+        assert_eq!(
+            self.frame,
+            Frame::Admission,
+            "only admission reads a source"
+        );
+        self.worker_from(Some(source))
+    }
+
+    fn worker_from<'p, Src: Source + 'p>(&self, source: Option<Src>) -> Worker<'p> {
         let translations = Arc::new(Mutex::new(Translations::declaring(&self.declared)));
         let mut pipeline = DynPipeline::new().with_data(self.pipeline.clone());
 
@@ -399,7 +414,7 @@ impl Blueprint {
                 pipeline = pipeline.add_stage(RateLimiter::new(self.accepted.clone()));
             }
             Frame::Admission => {
-                pipeline = pipeline.add_stage(Admission::new(
+                let admission = Admission::new(
                     Some(RateLimiter::new(self.arrived.clone())),
                     IcmpErrorHandler::new(self.flow_table.clone())
                         .chain(FlowLookup::new("flow-lookup", self.flow_table.clone())),
@@ -407,7 +422,11 @@ impl Blueprint {
                     Passthrough,
                     AclFilter::new("acl-filter", self.acl.handle()),
                     Some(RateLimiter::new(self.accepted.clone())),
-                ));
+                );
+                pipeline = match source {
+                    Some(source) => pipeline.add_stage(admission.with_source(source)),
+                    None => pipeline.add_stage(admission),
+                };
                 // The flow filter's checkpoint cannot sit inside the composite; its contract
                 // still holds after the ACL and the accepted meter.
                 pipeline = pipeline.add_stage(Checkpoint::new("after admission", contract::placed));
@@ -479,7 +498,7 @@ impl Blueprint {
     }
 }
 
-impl Worker {
+impl Worker<'_> {
     pub(crate) fn send(&mut self, packet: Packet<TestBuffer>) -> Packet<TestBuffer> {
         let mut out = self.send_batch(vec![packet]);
         assert_eq!(out.len(), 1, "the pipeline did not return the packet");
@@ -590,7 +609,7 @@ impl Fabric {
         self.worker.send_batch(packets)
     }
 
-    pub(crate) fn worker(&mut self) -> &mut Worker {
+    pub(crate) fn worker(&mut self) -> &mut Worker<'static> {
         &mut self.worker
     }
 
@@ -1016,7 +1035,7 @@ pub(crate) trait Load {
 }
 
 #[cfg(test)]
-pub(crate) fn drive(worker: &mut Worker, load: &mut dyn Load) {
+pub(crate) fn drive(worker: &mut Worker<'_>, load: &mut dyn Load) {
     for _ in 0..64 {
         if load.finished() {
             return;
@@ -1106,7 +1125,7 @@ async fn drain() {
 
 #[cfg(test)]
 pub(crate) fn run_schedule(
-    worker: &mut Worker,
+    worker: &mut Worker<'_>,
     loads: &mut [Box<dyn Load>],
     schedule: &[Poll],
 ) -> Vec<Vec<usize>> {
@@ -1144,7 +1163,7 @@ pub(crate) fn run_schedule(
 
 #[cfg(test)]
 pub(crate) async fn run_schedule_over_time(
-    worker: &mut Worker,
+    worker: &mut Worker<'_>,
     loads: &mut [Box<dyn Load>],
     schedule: &[Poll],
     waits: &[Duration],
@@ -6284,7 +6303,7 @@ mod model {
         }
     }
 
-    fn step(worker: &mut Worker, load: &mut dyn Load) {
+    fn step(worker: &mut Worker<'_>, load: &mut dyn Load) {
         let Some(packet) = load.next() else {
             panic!(
                 "a load was asked for a packet it would not give: {}",
@@ -6910,26 +6929,27 @@ mod model {
                                         let mut worker = blueprint.worker();
 
                                         let mut port = u16::from(which) * 1000 + 1000;
-                                        let send = |worker: &mut Worker, port: &mut u16| -> Seen {
-                                            *port += 1;
-                                            let src = format!("1.1.{which}.{host}");
-                                            let out = worker.send(tunnelled(
-                                                &build_test_udp_ipv4_packet(
-                                                    &src, "3.3.3.1", *port, 80,
-                                                ),
-                                            ));
-                                            let Verdict::Delivered {
-                                                oif: Some(oif),
-                                                dst: Some(dst),
-                                                ..
-                                            } = verdict(&out)
-                                            else {
-                                                return Err(format!(
-                                                    "it did not leave the gateway: {:?}",
-                                                    verdict(&out)
+                                        let send =
+                                            |worker: &mut Worker<'_>, port: &mut u16| -> Seen {
+                                                *port += 1;
+                                                let src = format!("1.1.{which}.{host}");
+                                                let out = worker.send(tunnelled(
+                                                    &build_test_udp_ipv4_packet(
+                                                        &src, "3.3.3.1", *port, 80,
+                                                    ),
                                                 ));
-                                            };
-                                            (0..=churn)
+                                                let Verdict::Delivered {
+                                                    oif: Some(oif),
+                                                    dst: Some(dst),
+                                                    ..
+                                                } = verdict(&out)
+                                                else {
+                                                    return Err(format!(
+                                                        "it did not leave the gateway: {:?}",
+                                                        verdict(&out)
+                                                    ));
+                                                };
+                                                (0..=churn)
                                                 .find(|nth| waypoint(*nth) == (dst, oif))
                                                 .ok_or_else(|| {
                                                     format!(
@@ -6937,13 +6957,15 @@ mod model {
                                                      not match any published next hop"
                                                     )
                                                 })
-                                        };
+                                            };
 
-                                        let probe = |worker: &mut Worker, port: &mut u16| -> Seen {
-                                            without_unwinding(|| send(worker, port)).unwrap_or_else(
-                                                |why| Err(format!("sending it panicked: {why}")),
-                                            )
-                                        };
+                                        let probe =
+                                            |worker: &mut Worker<'_>, port: &mut u16| -> Seen {
+                                                without_unwinding(|| send(worker, port))
+                                                    .unwrap_or_else(|why| {
+                                                        Err(format!("sending it panicked: {why}"))
+                                                    })
+                                            };
 
                                         gate.wait();
                                         let mut seen = Vec::with_capacity(
@@ -7952,6 +7974,7 @@ mod admission_frame {
     use super::shapes::{Batch, aim, wire};
     use super::*;
     use concurrency::process_global::atomic::{AtomicU64, Ordering};
+    use dag::generation::Generations;
     use net::headers::{Headers, TryHeaders, TryTcp};
     use net::tcp::TcpFlags;
 
@@ -8007,6 +8030,232 @@ mod admission_frame {
             );
         }
         want
+    }
+
+    /// One generation of the admission slice's tables, lowered from `overlay` as `mgmt` would.
+    fn admission_tables(overlay: &ValidatedOverlay) -> AdmissionTables {
+        let arrived = RateLimitWriter::new(RateLimits::empty(), std::num::NonZeroUsize::MIN);
+        apply_limits(&arrived, overlay);
+        let accepted = RateLimitWriter::new(RateLimits::empty(), std::num::NonZeroUsize::MIN);
+        apply_limits(&accepted, overlay);
+        AdmissionTables {
+            arrived: Some(arrived.reader().load()),
+            flow_filter: Arc::new(
+                FlowFilterContext::try_from(overlay).expect("a validated overlay lowers to tables"),
+            ),
+            acl: Arc::new(
+                AclFilterContext::try_from(overlay).expect("a validated overlay lowers to acls"),
+            ),
+            accepted: Some(accepted.reader().load()),
+        }
+    }
+
+    /// Send the same packets through the legacy fabric and a generation-reading worker, the
+    /// latter's stamped with `stamp`; assert they agree; return the legacy outputs.
+    fn agree_stamped(
+        legacy: &mut Fabric,
+        typed: &mut Worker<'_>,
+        stamp: Option<net::packet::Stamp>,
+        build: impl Fn() -> Vec<Packet<TestBuffer>>,
+        what: &str,
+    ) -> Vec<Packet<TestBuffer>> {
+        let want = legacy.send_batch(build());
+        let mut packets = build();
+        for packet in &mut packets {
+            packet.meta_mut().stamp = stamp;
+        }
+        let got = typed.send_batch(packets);
+        for (n, (want, got)) in want.iter().zip(&got).enumerate() {
+            assert_eq!(
+                observe(got),
+                observe(want),
+                "{what}, packet {n}: the admission frame (left) disagrees with the legacy stages"
+            );
+        }
+        want
+    }
+
+    /// What one flip showed.
+    struct Flipped {
+        under_previous: u64,
+        forwarded: u64,
+        differed: bool,
+    }
+
+    /// One reconfiguration to `next`, as the cross-generation differential steps through it.
+    fn one_flip(
+        legacy: &mut Fabric,
+        fleet: &Fleet,
+        generations: &Generations<AdmissionTables>,
+        typed: &mut Worker<'_>,
+        requests: &impl Fn() -> Vec<Packet<TestBuffer>>,
+        next: &ValidatedOverlay,
+        what: &str,
+    ) -> Flipped {
+        let selector = generations.selector();
+        // 1. One generation live.
+        let first = agree_stamped(
+            legacy,
+            typed,
+            Some(selector.stamp()),
+            requests,
+            &format!("{what}: one generation"),
+        );
+        // 2. The next published, hardware still stamping the current one.
+        let stamped = selector.stamp();
+        generations
+            .begin(admission_tables(next))
+            .expect("the previous generation retired");
+        let during = agree_stamped(
+            legacy,
+            typed,
+            Some(stamped),
+            requests,
+            &format!("{what}: two live, stamped with the previous"),
+        );
+        // 3. Both reconfigured; the flip.
+        legacy.fleet().reconfigure(next);
+        fleet.reconfigure(next);
+        generations
+            .flip()
+            .expect("the worker observed the next generation");
+        let after = agree_stamped(
+            legacy,
+            typed,
+            Some(selector.stamp()),
+            requests,
+            &format!("{what}: flipped"),
+        );
+        // 4. Replies, then retire.
+        let replies = || {
+            after
+                .iter()
+                .filter(|p| !p.is_done())
+                .filter_map(reply_to)
+                .collect()
+        };
+        agree_stamped(
+            legacy,
+            typed,
+            Some(selector.stamp()),
+            replies,
+            &format!("{what}: replies"),
+        );
+        generations
+            .retire()
+            .expect("a burst stamped with the newest acknowledged it");
+        let verdicts =
+            |out: &[Packet<TestBuffer>]| out.iter().map(Packet::is_done).collect::<Vec<_>>();
+        Flipped {
+            under_previous: during.len() as u64,
+            forwarded: after.iter().filter(|p| !p.is_done()).count() as u64,
+            differed: verdicts(&first) != verdicts(&after),
+        }
+    }
+
+    /// The admission frame, reading its tables through generations while the configuration
+    /// changes, agrees with the legacy stages reconfigured at the same points. Per round:
+    /// 1. requests under configuration A;
+    /// 2. B published but not flipped to: two generations live, packets stamped with A's run
+    ///    under A (the legacy stages still have A);
+    /// 3. both reconfigured to B, flipped: packets stamped with B's;
+    /// 4. B's packets' replies; the previous generation retires.
+    ///
+    /// A burst straddling a flip has no legacy equivalent: `dag`'s generation tests check those
+    /// packet by packet.
+    #[test]
+    fn the_admission_frame_matches_the_legacy_stages_across_generations() {
+        static SAMPLE: Sample = Sample::new(64);
+        static UNDER_PREVIOUS: AtomicU64 = AtomicU64::new(0);
+        static FORWARDED: AtomicU64 = AtomicU64::new(0);
+        static DIFFERED: AtomicU64 = AtomicU64::new(0);
+
+        let _eal = dpdk::test_support::start_eal();
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator((Batch, Batch))
+            .with_iterations(SAMPLE.cases())
+            .for_each(|((exposes, stacks), (other, _))| {
+                SAMPLE.draw();
+                settled(|| {
+                    let lower = |exposes: &Vec<VpcExpose>| {
+                        overlay_with_exposes_and_acl(exposes.clone(), None)
+                            .ok()
+                            .and_then(|overlay| overlay.validate().ok())
+                    };
+                    let (Some(a), Some(b)) = (lower(exposes), lower(other)) else {
+                        return;
+                    };
+                    let mut legacy = Fabric::over_framed(
+                        &a,
+                        None,
+                        Arc::new(FlowTable::default()),
+                        Frame::Legacy,
+                    );
+                    let fleet = Fleet::lowering_framed(
+                        &a,
+                        None,
+                        Arc::new(FlowTable::default()),
+                        Frame::Admission,
+                    );
+                    let generations = Generations::new(admission_tables(&a));
+                    let mut typed = fleet.blueprint().worker_with(generations.reader());
+
+                    let private = exposes.first().and_then(|e| {
+                        e.ips
+                            .first()
+                            .map(lpm::prefix::PrefixWithOptionalPorts::prefix)
+                    });
+                    let requests = || {
+                        stacks
+                            .iter()
+                            .filter_map(|(_, headers)| {
+                                let mut headers = headers.clone();
+                                aim(&mut headers, private);
+                                let mut packet = wire(&headers)?;
+                                arrive(&mut packet, local());
+                                Some(packet)
+                            })
+                            .collect::<Vec<_>>()
+                    };
+                    // A worker acknowledges a flip on a packet stamped with the new generation.
+                    if requests().is_empty() {
+                        return;
+                    }
+                    let (mut overlay, mut next) = (&a, &b);
+                    for round in 0..2 {
+                        let counts = one_flip(
+                            &mut legacy,
+                            &fleet,
+                            &generations,
+                            &mut typed,
+                            &requests,
+                            next,
+                            &format!("round {round}"),
+                        );
+                        UNDER_PREVIOUS.fetch_add(counts.under_previous, Ordering::Relaxed);
+                        FORWARDED.fetch_add(counts.forwarded, Ordering::Relaxed);
+                        DIFFERED.fetch_add(u64::from(counts.differed), Ordering::Relaxed);
+                        std::mem::swap(&mut overlay, &mut next);
+                    }
+                });
+            });
+
+        let (under_previous, forwarded, differed) = (
+            UNDER_PREVIOUS.load(Ordering::Relaxed),
+            FORWARDED.load(Ordering::Relaxed),
+            DIFFERED.load(Ordering::Relaxed),
+        );
+        eprintln!(
+            "under the previous generation={under_previous} forwarded={forwarded} configurations that changed verdicts={differed}"
+        );
+        SAMPLE.assert_covered(
+            under_previous > 0,
+            "no packet ran under a previous generation",
+        );
+        SAMPLE.assert_covered(forwarded > 0, "no packet was ever forwarded");
+        SAMPLE.assert_covered(differed > 0, "no reconfiguration ever changed a verdict");
     }
 
     /// A reply to a forwarded UDP or TCP packet, as the remote VPC would send it.
