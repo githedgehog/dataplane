@@ -339,3 +339,46 @@ fn overlapping_scrapes_keep_drop_totals_whole() {
     });
     assert_eq!(limits.dropped().get(&vni(FROM)).copied(), Some(2000));
 }
+
+/// The typed ingress stage decides as the legacy one: drops, police, and packets from VPCs no rule
+/// names.
+#[test]
+fn the_typed_stage_polices_as_the_legacy_one() {
+    let config = overlay(
+        vec![("m", meter(5, 2))],
+        vec![
+            rule(Some("vpc-1"), "10.1.1.0/24", police("m")),
+            rule(Some("vpc-1"), "10.1.0.0/16", IngressAction::Drop),
+            rule(None, "10.2.0.0/16", police("m")),
+        ],
+    );
+    let burst = || -> Vec<Packet<TestBuffer>> {
+        (0..30)
+            .map(|n| match n % 5 {
+                0 => arriving(FROM, "10.1.1.1", 100),
+                1 => arriving(FROM, "10.1.2.1", 100),
+                2 => arriving(OTHER, "10.1.2.1", 100),
+                3 => arriving(OTHER, "10.2.0.1", 100),
+                _ => arriving(FROM, "10.9.0.1", 100),
+            })
+            .collect()
+    };
+    let (legacy_writer, typed_writer) = (writer(&config), writer(&config));
+    let mut legacy = RateLimiter::new(legacy_writer.reader());
+    let mut stage = RateLimiter::new(typed_writer.reader());
+    let want = burst_of(&mut legacy, burst());
+    let got = super::typed(&mut stage, burst(), |stage, burst, all| {
+        let (with_src, _) = burst.split::<dag::kind::SrcVpc, _>(all);
+        let policed = stage.process_sel(burst, with_src);
+        (policed.passed.bits(), policed.dropped.bits())
+    });
+    assert_eq!(super::outcome(&got), super::outcome(&want));
+    assert!(
+        want.iter()
+            .any(|p| p.get_done() == Some(DoneReason::IngressDropped))
+    );
+    assert!(
+        want.iter()
+            .any(|p| p.get_done() == Some(DoneReason::RateLimited))
+    );
+}

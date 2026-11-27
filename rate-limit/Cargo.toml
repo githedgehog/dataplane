@@ -11,6 +11,7 @@ clock = { workspace = true }
 common = { workspace = true }
 concurrency = { workspace = true }
 config = { workspace = true }
+dag = { workspace = true }
 lpm = { workspace = true }
 match-action = { workspace = true, features = ["derive"] }
 metrics = { workspace = true }

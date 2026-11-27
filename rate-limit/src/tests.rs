@@ -17,7 +17,7 @@ use lpm::prefix::{Prefix, PrefixWithOptionalPorts};
 use net::buffer::TestBuffer;
 use net::checksum::Checksum;
 use net::headers::builder::HeaderStack;
-use net::headers::{Headers, Net, TryIp, TryIpMut, TryIpv4};
+use net::headers::{Headers, Net, TryHeaders, TryIp, TryIpMut, TryIpv4};
 use net::ip::dscp::Dscp;
 use net::ipv4::UnicastIpv4Addr;
 use net::ipv6::UnicastIpv6Addr;
@@ -664,5 +664,69 @@ fn a_long_trailer_spends_the_byte_budget() {
     assert_eq!(
         out.iter().map(Packet::get_done).collect::<Vec<_>>(),
         [None, Some(DoneReason::RateLimited)]
+    );
+}
+
+/// What policing left of each packet: its fate, and its (possibly remarked) headers.
+fn outcome(packets: &[Packet<TestBuffer>]) -> Vec<(Option<DoneReason>, Headers)> {
+    packets
+        .iter()
+        .map(|p| (p.get_done(), p.headers().clone()))
+        .collect()
+}
+
+/// Run `stage`'s typed entry over `packets`, as a composite hosts it: import the kinds, narrow to
+/// what the stage needs, export.
+fn typed<C>(
+    stage: &mut RateLimiter<C>,
+    mut packets: Vec<Packet<TestBuffer>>,
+    run: impl for<'b> FnOnce(
+        &mut RateLimiter<C>,
+        &mut dag::Burst<'b, TestBuffer>,
+        dag::Sel<'b, dag::Opaque>,
+    ) -> (u64, u64),
+) -> Vec<Packet<TestBuffer>> {
+    let input = packets.len();
+    let (passed, dropped) = dag::scope(&mut packets, |mut burst, all| {
+        let all = burst.scan(all);
+        run(stage, &mut burst, all)
+    });
+    assert_eq!(passed & dropped, 0);
+    assert_eq!((passed | dropped).count_ones() as usize, input);
+    packets
+}
+
+/// The typed peering stage decides as the legacy one: same meters, same remarks, same drops.
+#[test]
+fn the_typed_stage_polices_as_the_legacy_one() {
+    let config = configuration(
+        vec![("m", meter(6, 3))],
+        vec![rule("10.1.1.0/24", "m"), rule("fd01::/64", "m")],
+    );
+    let burst = || -> Vec<Packet<TestBuffer>> {
+        (0..24)
+            .map(|n| match n % 3 {
+                0 => packet("10.1.1.1", 80),
+                1 => packet("fd01::1", 80),
+                _ => packet("10.1.9.1", 80), // matches no rule
+            })
+            .collect()
+    };
+    let legacy_writer = writer(&config, 1);
+    let typed_writer = writer(&config, 1);
+    let mut legacy = RateLimiter::new(legacy_writer.reader());
+    let mut stage = RateLimiter::new(typed_writer.reader());
+    let want: Vec<_> = legacy.process(burst()).collect();
+    let got = typed(&mut stage, burst(), |stage, burst, all| {
+        let (with_src, _) = burst.split::<dag::kind::SrcVpc, _>(all);
+        let (both, _) = burst.split::<dag::kind::DstVpc, _>(with_src);
+        let policed = stage.process_sel(burst, both);
+        (policed.passed.bits(), policed.dropped.bits())
+    });
+    assert_eq!(outcome(&got), outcome(&want));
+    // The meter did act: some packets were remarked and some dropped.
+    assert!(
+        want.iter()
+            .any(|p| p.get_done() == Some(DoneReason::RateLimited))
     );
 }

@@ -5,6 +5,7 @@
 
 use concurrency::sync::Arc;
 use config::external::overlay::vpcpeering::{ValidatedExpose, VpcExposeNatConfig};
+use dag::{Burst, Drops, Edit, Emit, Idx, Lacks, Sel, Set, Write, kind};
 use net::FlowKey;
 use net::buffer::PacketBufferMut;
 use net::flows::{FlowInfo, FlowInfoFlags, FlowStatus};
@@ -35,10 +36,11 @@ pub struct FlowFilter {
 
 /// Outcome of phase A (`classify`) for one packet.
 enum Classification {
-    /// Handled in place via active flow state; no table lookup needed.
-    Bypassed,
-    /// Drop the packet (Setting the DoneReason in its metadatas is done in place).
-    Drop,
+    /// Handled in place via active flow state, which names the destination; no table lookup
+    /// needed.
+    Bypassed(VpcDiscriminant),
+    /// Drop the packet for this reason.
+    Drop(DoneReason),
     /// Needs a table lookup; carries the query and any attached flow summary (for phase C).
     Lookup {
         input: LookupInput,
@@ -77,8 +79,10 @@ impl FlowFilter {
             if packet.is_done() || !packet.meta().is_overlay() || packet.meta().dst_vpcd.is_some() {
                 continue;
             }
-            match self.classify(packet, genid) {
-                Classification::Bypassed | Classification::Drop => {}
+            let src_vpcd = packet.meta().src_vpcd;
+            match self.classify(packet, src_vpcd, genid) {
+                Classification::Bypassed(dst_vpcd) => packet.meta_mut().dst_vpcd = Some(dst_vpcd),
+                Classification::Drop(reason) => packet.done(reason),
                 Classification::Lookup {
                     input,
                     flow_summary,
@@ -103,13 +107,11 @@ impl FlowFilter {
                 }
                 LookupResult::SourceMiss(_) | LookupResult::DestinationMiss => false,
             };
-            self.apply_route(
-                &mut burst[item.idx],
-                result,
-                track,
-                item.flow_summary.as_ref(),
-                genid,
-            );
+            let packet = &mut burst[item.idx];
+            match self.apply_route(packet, result, track, item.flow_summary.as_ref(), genid) {
+                Ok(dst_vpcd) => packet.meta_mut().dst_vpcd = Some(dst_vpcd),
+                Err(reason) => packet.done(reason),
+            }
         }
     }
 
@@ -118,6 +120,7 @@ impl FlowFilter {
     fn classify<Buf: PacketBufferMut>(
         &self,
         packet: &mut Packet<Buf>,
+        src_vpcd: Option<VpcDiscriminant>,
         genid: i64,
     ) -> Classification {
         let nfi = &self.name;
@@ -126,8 +129,8 @@ impl FlowFilter {
         if let Some(flow_summary) = attached_flow.as_ref() {
             // Bypass flow-filter if packet has up-to-date active flow-info
             if let Some(dst_vpcd) = self.dst_vpcd_from_valid_flow(flow_summary, genid) {
-                Self::tag_for_bypass(packet.meta_mut(), dst_vpcd, flow_summary);
-                return Classification::Bypassed;
+                Self::tag_for_bypass(packet.meta_mut(), flow_summary);
+                return Classification::Bypassed(dst_vpcd);
             }
             (revalidation_dst_vpcd, revalidation_gate) =
                 self.flow_revalidation_data(flow_summary, genid);
@@ -143,17 +146,14 @@ impl FlowFilter {
         else {
             if packet.try_ip().is_none() {
                 debug!("{nfi}: No IP headers found, dropping packet");
-                packet.done(DoneReason::NotIp);
-            } else {
-                debug!("{nfi}: Header chain carries a layer this stage cannot account for");
-                packet.done(DoneReason::Unhandled);
+                return Classification::Drop(DoneReason::NotIp);
             }
-            return Classification::Drop;
+            debug!("{nfi}: Header chain carries a layer this stage cannot account for");
+            return Classification::Drop(DoneReason::Unhandled);
         };
-        let Some(src_vpcd) = packet.meta().src_vpcd else {
+        let Some(src_vpcd) = src_vpcd else {
             debug!("{nfi}: Missing source VPC discriminant, dropping packet");
-            packet.done(DoneReason::Unroutable);
-            return Classification::Drop;
+            return Classification::Drop(DoneReason::Unroutable);
         };
 
         let upper = packet.upper_layer_proto();
@@ -163,8 +163,7 @@ impl FlowFilter {
             UpperLayerProto::NonFirstFragment => NextHeader::FRAGMENT,
             UpperLayerProto::Indeterminate => {
                 debug!("{nfi}: Could not determine the upper-layer protocol, dropping packet");
-                packet.done(DoneReason::Malformed);
-                return Classification::Drop;
+                return Classification::Drop(DoneReason::Malformed);
             }
         };
 
@@ -187,7 +186,8 @@ impl FlowFilter {
         }
     }
 
-    /// Phase C: apply a resolved route (or drop on a miss) to a single packet.
+    /// Phase C: apply a resolved route to a single packet, and return its destination VPC (the
+    /// caller records it); or the reason to drop it on a miss.
     fn apply_route<Buf: PacketBufferMut>(
         &self,
         packet: &mut Packet<Buf>,
@@ -195,27 +195,24 @@ impl FlowFilter {
         track: bool,
         flow_summary: Option<&FlowSummary>,
         genid: i64,
-    ) {
+    ) -> Result<VpcDiscriminant, DoneReason> {
         let nfi = &self.name;
         let (dst_vpcd, dst_nat_mode, src_nat_mode) = match result {
             LookupResult::Route(route) => route,
             LookupResult::SourceMiss(dst_vpcd) => {
                 debug!("{nfi}: Source not allowed towards {dst_vpcd}, dropping packet");
                 packet.invalidate_flows();
-                packet.done(DoneReason::Filtered);
-                return;
+                return Err(DoneReason::Filtered);
             }
             LookupResult::DestinationMiss => {
                 debug!("{nfi}: Could not determine destination VPC, dropping packet");
                 packet.invalidate_flows();
-                packet.done(DoneReason::Filtered);
-                return;
+                return Err(DoneReason::Filtered);
             }
         };
         debug!(
             "{nfi}: Packet matches peering configuration, found VPC {dst_vpcd} and NAT modes {src_nat_mode:?} (src), {dst_nat_mode:?} (dst)"
         );
-        packet.meta_mut().dst_vpcd = Some(dst_vpcd);
         Self::set_nat_requirements(packet.meta_mut(), src_nat_mode, dst_nat_mode);
         if !packet.meta().requires_masquerade() && !packet.meta().requires_port_forwarding() {
             packet.meta_mut().set_forced_flow_tracking(track);
@@ -239,14 +236,10 @@ impl FlowFilter {
         if self.should_invalidate_flow(packet.meta(), dst_vpcd, genid, flow_summary) {
             packet.invalidate_flows();
         }
+        Ok(dst_vpcd)
     }
 
-    fn tag_for_bypass(
-        meta: &mut PacketMeta,
-        dst_vpcd: VpcDiscriminant,
-        flow_summary: &FlowSummary,
-    ) {
-        meta.dst_vpcd = Some(dst_vpcd);
+    fn tag_for_bypass(meta: &mut PacketMeta, flow_summary: &FlowSummary) {
         if flow_summary.needs_masquerade {
             meta.set_masquerade(true);
         }
@@ -394,6 +387,73 @@ impl FlowFilter {
         debug!("{nfi}: Packet can bypass flow filter thanks to flow information");
         Some(flow_summary.dst_vpcd)
     }
+}
+
+impl FlowFilter {
+    /// The typed stage: route a selection whose destination VPC is proven unset, batching lookups
+    /// as the legacy stage does. The source VPC is read with a presence test, not required: a
+    /// packet without one is dropped as `Unroutable`, but only after the header checks, as the
+    /// legacy stage orders them.
+    pub fn process_sel<'b, Buf, S>(
+        &mut self,
+        burst: &mut Burst<'b, Buf>,
+        input: Sel<'b, S>,
+    ) -> Routed<'b, S>
+    where
+        Buf: PacketBufferMut,
+        S: Lacks<kind::DstVpc> + Edit<kind::DstVpc>,
+    {
+        let genid = self.pipeline_data.genid();
+        let mut routed = Emit::<S, Write<kind::DstVpc>>::new();
+        let mut dropped = Drops::none();
+        let mut work: Vec<(Idx<'b, S>, Option<FlowSummary>)> = Vec::new();
+        let mut inputs: Vec<LookupInput> = Vec::new();
+        for i in input {
+            let src = burst.meta(&i).try_get::<kind::SrcVpc>().copied();
+            match self.classify(burst.packet_mut(&i), src, genid) {
+                Classification::Bypassed(dst) => routed.push(burst, i, dst),
+                Classification::Drop(reason) => burst.drop(&mut dropped, i, reason),
+                Classification::Lookup {
+                    input,
+                    flow_summary,
+                } => {
+                    work.push((i, flow_summary));
+                    inputs.push(input);
+                }
+            }
+        }
+        if !inputs.is_empty() {
+            let mut results: Vec<LookupResult> = vec![LookupResult::DestinationMiss; inputs.len()];
+            let tables = self.tables.load();
+            tables.lookup_batch(&inputs, &mut results);
+            for (((i, flow_summary), result), input) in work.into_iter().zip(results).zip(&inputs) {
+                let track = match result {
+                    LookupResult::Route((dst_vpcd, _, _)) => {
+                        tables.requires_flow_tracking(input.src_vpcd, dst_vpcd)
+                    }
+                    LookupResult::SourceMiss(_) | LookupResult::DestinationMiss => false,
+                };
+                let packet = burst.packet_mut(&i);
+                match self.apply_route(packet, result, track, flow_summary.as_ref(), genid) {
+                    Ok(dst) => routed.push(burst, i, dst),
+                    Err(reason) => burst.drop(&mut dropped, i, reason),
+                }
+            }
+        }
+        Routed {
+            routed: routed.finish(),
+            dropped,
+        }
+    }
+}
+
+/// What the typed flow filter does with its input.
+#[derive(Debug)]
+pub struct Routed<'b, S: Edit<kind::DstVpc>> {
+    /// Allowed by a peering, with their destination VPC set.
+    pub routed: Sel<'b, Set<S, kind::DstVpc>>,
+    /// Filtered, or not routable.
+    pub dropped: Drops<'b>,
 }
 
 impl<Buf: PacketBufferMut> NetworkFunction<Buf> for FlowFilter {

@@ -12,6 +12,7 @@ members = [
     "concurrency",
     "concurrency-macros",
     "config",
+    "dag",
     "dataplane",
     "dpdk",
     "dpdk-sys",
@@ -95,6 +96,7 @@ clock = { path = "./clock", package = "dataplane-clock", features = [] }
 concurrency = { path = "./concurrency", package = "dataplane-concurrency", features = [] }
 concurrency-macros = { path = "./concurrency-macros", package = "dataplane-concurrency-macros", features = [] }
 config = { path = "./config", package = "dataplane-config", features = [] }
+dag = { path = "./dag", package = "dataplane-dag", features = [] }
 dpdk = { path = "./dpdk", package = "dataplane-dpdk", features = [] }
 dpdk-sys = { path = "./dpdk-sys", package = "dataplane-dpdk-sys", features = [] }
 dpdk-sysroot-helper = { path = "./dpdk-sysroot-helper", package = "dataplane-dpdk-sysroot-helper", features = [] }

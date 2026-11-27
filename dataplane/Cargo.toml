@@ -27,6 +27,7 @@ clock = { workspace = true }
 common = { workspace = true }
 concurrency = { workspace = true }
 config = { workspace = true }
+dag = { workspace = true }
 dpdk = { workspace = true }
 errno = { workspace = true }
 ethtool2 = { workspace = true }

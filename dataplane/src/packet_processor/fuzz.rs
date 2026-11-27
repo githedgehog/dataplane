@@ -35,7 +35,12 @@ use net::eth::mac::{Mac, SourceMac};
 use net::interface::{InterfaceIndex, InterfaceName};
 use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::vxlan::Vni;
-use pipeline::{DynPipeline, NetworkFunction, PipelineData};
+use pipeline::sample_nfs::Passthrough;
+use pipeline::{DynPipeline, NetworkFunction, PipelineData, StaticChain};
+use rate_limit::{
+    Backend, IngressRules, PeeringRules, Policy, RateLimitReader, RateLimitWriter, RateLimiter,
+    RateLimits,
+};
 use routing::testing::RouterTables;
 use routing::testing::{FibGroup, FwAction, NhopKey, RouteOrigin};
 use routing::{EgressObject, Encapsulation, FibEntry, PktInstruction, Vtep, VxlanEncapsulation};
@@ -59,13 +64,54 @@ pub(crate) enum Enact {
     Everything,
 }
 
+use super::admission::{Admission, Hosted};
 use super::egress::Egress;
 use super::ingress::Ingress;
 use super::ipforward::IpForwarder;
 
+/// How a worker runs the admission stages (arrived meter to accepted meter).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Frame {
+    /// One legacy stage each.
+    Legacy,
+    /// The typed DAG behind one composite stage (slice 1 of the match-action/DAG rework).
+    Admission,
+    /// The legacy stages, hosted as the one node of a composite: the bridge's fixed cost. For
+    /// measurement.
+    Hosted,
+    /// The legacy stages chained into one stage, with no bridge: the control for `Hosted`.
+    Chained,
+}
+
+impl Frame {
+    /// `DATAPLANE_TEST_FRAME=admission` runs every harness test through the typed frame, with the
+    /// suite's own checks as the oracle.
+    fn from_env() -> Frame {
+        match std::env::var("DATAPLANE_TEST_FRAME").as_deref() {
+            Ok("admission") => Frame::Admission,
+            Ok("hosted") => Frame::Hosted,
+            Ok("chained") => Frame::Chained,
+            _ => Frame::Legacy,
+        }
+    }
+}
+
+/// Publish a rate-limit policy, unless the overlay configures none: building one reads the clock,
+/// which a paused virtual clock refuses off its runtime, and most of the harness's tests run there.
+fn apply_limits<C: Policy>(writer: &RateLimitWriter<C>, overlay: &ValidatedOverlay) {
+    if C::rules(overlay).1.is_empty() {
+        return;
+    }
+    writer
+        .apply(overlay, Backend::Dpdk)
+        .expect("a validated overlay lowers to rate limits");
+}
+
 pub(crate) struct Fleet {
     flow_filter: FlowFilterContextWriter,
     acl: AclFilterContextWriter,
+    arrived: RateLimitWriter<IngressRules>,
+    accepted: RateLimitWriter<PeeringRules>,
     static_nat: RefCell<NatTablesWriter>,
     portfw: RefCell<PortFwTableWriter>,
     masquerade: RefCell<NatAllocatorWriter>,
@@ -77,6 +123,9 @@ pub(crate) struct Fleet {
 pub(crate) struct Blueprint {
     flow_filter: FlowFilterContextReaderFactory,
     acl: AclFilterContextReaderFactory,
+    arrived: RateLimitReader<IngressRules>,
+    accepted: RateLimitReader<PeeringRules>,
+    frame: Frame,
     static_nat: NatTablesReaderFactory,
     portfw: PortFwTableReaderFactory,
     masquerade: NatAllocatorReaderFactory,
@@ -110,6 +159,19 @@ impl Fleet {
         tables: Option<&Topology>,
         flow_table: Arc<FlowTable>,
     ) -> Self {
+        Self::lowering_framed(overlay, tables, flow_table, Frame::from_env())
+    }
+
+    pub(crate) fn lowering_framed(
+        overlay: &ValidatedOverlay,
+        tables: Option<&Topology>,
+        flow_table: Arc<FlowTable>,
+        frame: Frame,
+    ) -> Self {
+        let arrived = RateLimitWriter::new(RateLimits::empty(), std::num::NonZeroUsize::MIN);
+        apply_limits(&arrived, overlay);
+        let accepted = RateLimitWriter::new(RateLimits::empty(), std::num::NonZeroUsize::MIN);
+        apply_limits(&accepted, overlay);
         let flow_filter = FlowFilterContextWriter::new();
         flow_filter.store(
             FlowFilterContext::try_from(overlay).expect("a validated overlay lowers to tables"),
@@ -139,6 +201,9 @@ impl Fleet {
         let blueprint = Blueprint {
             flow_filter: flow_filter.get_reader_factory(),
             acl: acl.get_reader_factory(),
+            arrived: arrived.reader(),
+            accepted: accepted.reader(),
+            frame,
             static_nat: static_nat.get_reader_factory(),
             portfw: portfw.reader().factory(),
             masquerade: masquerade.get_reader_factory(),
@@ -155,6 +220,8 @@ impl Fleet {
         Self {
             flow_filter,
             acl,
+            arrived,
+            accepted,
             static_nat: RefCell::new(static_nat),
             portfw: RefCell::new(portfw),
             masquerade: RefCell::new(masquerade),
@@ -200,6 +267,8 @@ impl Fleet {
             self.acl.store(
                 AclFilterContext::try_from(overlay).expect("a validated overlay lowers to acls"),
             );
+            apply_limits(&self.arrived, overlay);
+            apply_limits(&self.accepted, overlay);
         }
         if doing(Enact::StaticNat) {
             self.static_nat.borrow_mut().update_nat_tables(
@@ -293,6 +362,16 @@ impl Blueprint {
         }
     }
 
+    /// The legacy admission stages chained into one stage (the `Hosted` and `Chained` frames).
+    fn admission_chain(&self) -> impl NetworkFunction<TestBuffer> + use<> {
+        RateLimiter::new(self.arrived.clone())
+            .chain(IcmpErrorHandler::new(self.flow_table.clone()))
+            .chain(FlowLookup::new("flow-lookup", self.flow_table.clone()))
+            .chain(FlowFilter::new("flow-filter", self.flow_filter.handle()))
+            .chain(AclFilter::new("acl-filter", self.acl.handle()))
+            .chain(RateLimiter::new(self.accepted.clone()))
+    }
+
     pub(crate) fn worker(&self) -> Worker {
         let translations = Arc::new(Mutex::new(Translations::declaring(&self.declared)));
         let mut pipeline = DynPipeline::new().with_data(self.pipeline.clone());
@@ -306,11 +385,42 @@ impl Blueprint {
             ));
         }
 
-        pipeline = pipeline.add_stage(IcmpErrorHandler::new(self.flow_table.clone()));
-        pipeline = pipeline.add_stage(FlowLookup::new("flow-lookup", self.flow_table.clone()));
-        pipeline = pipeline.add_stage(FlowFilter::new("flow-filter", self.flow_filter.handle()));
-        pipeline = pipeline.add_stage(Checkpoint::new("after flow-filter", contract::placed));
-        pipeline = pipeline.add_stage(AclFilter::new("acl-filter", self.acl.handle()));
+        match self.frame {
+            Frame::Legacy => {
+                pipeline = pipeline.add_stage(RateLimiter::new(self.arrived.clone()));
+                pipeline = pipeline.add_stage(IcmpErrorHandler::new(self.flow_table.clone()));
+                pipeline =
+                    pipeline.add_stage(FlowLookup::new("flow-lookup", self.flow_table.clone()));
+                pipeline =
+                    pipeline.add_stage(FlowFilter::new("flow-filter", self.flow_filter.handle()));
+                pipeline =
+                    pipeline.add_stage(Checkpoint::new("after flow-filter", contract::placed));
+                pipeline = pipeline.add_stage(AclFilter::new("acl-filter", self.acl.handle()));
+                pipeline = pipeline.add_stage(RateLimiter::new(self.accepted.clone()));
+            }
+            Frame::Admission => {
+                pipeline = pipeline.add_stage(Admission::new(
+                    Some(RateLimiter::new(self.arrived.clone())),
+                    IcmpErrorHandler::new(self.flow_table.clone())
+                        .chain(FlowLookup::new("flow-lookup", self.flow_table.clone())),
+                    FlowFilter::new("flow-filter", self.flow_filter.handle()),
+                    Passthrough,
+                    AclFilter::new("acl-filter", self.acl.handle()),
+                    Some(RateLimiter::new(self.accepted.clone())),
+                ));
+                // The flow filter's checkpoint cannot sit inside the composite; its contract
+                // still holds after the ACL and the accepted meter.
+                pipeline = pipeline.add_stage(Checkpoint::new("after admission", contract::placed));
+            }
+            Frame::Hosted => {
+                pipeline = pipeline.add_stage(Hosted::new(self.admission_chain()));
+                pipeline = pipeline.add_stage(Checkpoint::new("after admission", contract::placed));
+            }
+            Frame::Chained => {
+                pipeline = pipeline.add_stage(self.admission_chain());
+                pipeline = pipeline.add_stage(Checkpoint::new("after admission", contract::placed));
+            }
+        }
         pipeline = pipeline.add_stage(StaticNat::with_reader(
             "static-nat",
             self.static_nat.handle(),
@@ -451,7 +561,16 @@ impl Fabric {
         tables: Option<Topology>,
         flow_table: Arc<FlowTable>,
     ) -> Self {
-        let fleet = Fleet::lowering(overlay, tables.as_ref(), flow_table);
+        Self::over_framed(overlay, tables, flow_table, Frame::from_env())
+    }
+
+    pub(crate) fn over_framed(
+        overlay: &ValidatedOverlay,
+        tables: Option<Topology>,
+        flow_table: Arc<FlowTable>,
+        frame: Frame,
+    ) -> Self {
+        let fleet = Fleet::lowering_framed(overlay, tables.as_ref(), flow_table, frame);
         let worker = fleet.blueprint().worker();
         Self {
             _tables: tables,
@@ -7822,5 +7941,249 @@ mod model {
                 eprintln!("  {count:>4}  {reason}");
             }
         }
+    }
+}
+
+/// Slice 1, step 1: the admission stages as a typed DAG behind one composite stage
+/// ([`Admission`]), against the legacy stages they replace. Same configuration, same packets, a
+/// fabric each; everything a later stage can observe of each packet must agree.
+#[cfg(test)]
+mod admission_frame {
+    use super::shapes::{Batch, aim, wire};
+    use super::*;
+    use concurrency::process_global::atomic::{AtomicU64, Ordering};
+    use net::headers::{Headers, TryHeaders, TryTcp};
+    use net::tcp::TcpFlags;
+
+    /// What a stage after admission can observe of a packet.
+    #[derive(Debug, PartialEq, Eq)]
+    #[allow(clippy::struct_excessive_bools)] // one per legacy flag compared
+    struct Observed {
+        done: Option<DoneReason>,
+        src_vpcd: Option<VpcDiscriminant>,
+        dst_vpcd: Option<VpcDiscriminant>,
+        tcp_flags: Option<TcpFlags>,
+        masquerade: bool,
+        port_forwarding: bool,
+        static_nat: (bool, bool),
+        tracking: bool,
+        flow: bool,
+        headers: Headers,
+    }
+
+    fn observe(packet: &Packet<TestBuffer>) -> Observed {
+        let meta = packet.meta();
+        Observed {
+            done: packet.get_done(),
+            src_vpcd: meta.src_vpcd,
+            dst_vpcd: meta.dst_vpcd,
+            tcp_flags: meta.tcp_flags,
+            masquerade: meta.requires_masquerade(),
+            port_forwarding: meta.requires_port_forwarding(),
+            static_nat: (
+                meta.requires_static_nat_src(),
+                meta.requires_static_nat_dst(),
+            ),
+            tracking: meta.has_forced_flow_tracking(),
+            flow: meta.flow_info.is_some(),
+            headers: packet.headers().clone(),
+        }
+    }
+
+    /// Send the same packets through both fabrics; assert they agree; return the legacy outputs.
+    fn agree(
+        fabrics: &mut [Fabric; 2],
+        build: impl Fn() -> Vec<Packet<TestBuffer>>,
+        what: &str,
+    ) -> Vec<Packet<TestBuffer>> {
+        let [legacy, typed] = fabrics;
+        let want = legacy.send_batch(build());
+        let got = typed.send_batch(build());
+        for (n, (want, got)) in want.iter().zip(&got).enumerate() {
+            assert_eq!(
+                observe(got),
+                observe(want),
+                "{what}, packet {n}: the admission frame (left) disagrees with the legacy stages"
+            );
+        }
+        want
+    }
+
+    /// A reply to a forwarded UDP or TCP packet, as the remote VPC would send it.
+    fn reply_to(out: &Packet<TestBuffer>) -> Option<Packet<TestBuffer>> {
+        let (src, dst) = (out.ip_source()?, out.ip_destination()?);
+        let (sport, dport) = (
+            out.transport_src_port()?.get(),
+            out.transport_dst_port()?.get(),
+        );
+        let mut reply = if out.try_tcp().is_some() {
+            super::round_trip::tcp(dst, src, dport, sport, TcpFlags::ACK)?
+        } else {
+            super::round_trip::udp(dst, src, dport, sport)?
+        };
+        arrive(&mut reply, remote());
+        Some(reply)
+    }
+
+    /// A rough cost comparison of the two frames, on the whole harness worker (masquerade and
+    /// flow tracking included): established UDP flows, bursts of 32. Run in release:
+    /// `cargo test -p dataplane --release admission_frame_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a measurement, not a check"]
+    fn admission_frame_cost() {
+        // `DATAPLANE_COST_FRAME=legacy|admission` runs one frame only (for `perf record`), and
+        // `DATAPLANE_COST_ROUNDS` sets the rounds.
+        let rounds: u32 = std::env::var("DATAPLANE_COST_ROUNDS")
+            .ok()
+            .and_then(|r| r.parse().ok())
+            .unwrap_or(20_000);
+        let frames: &[Frame] = match std::env::var("DATAPLANE_COST_FRAME").as_deref() {
+            Ok("legacy") => &[Frame::Legacy],
+            Ok("admission") => &[Frame::Admission],
+            Ok("hosted") => &[Frame::Hosted],
+            Ok("chained") => &[Frame::Chained],
+            _ => &[
+                Frame::Legacy,
+                Frame::Admission,
+                Frame::Legacy,
+                Frame::Admission,
+            ],
+        };
+        let _eal = dpdk::test_support::start_eal();
+        let overlay = overlay_with_exposes_and_acl(super::routed::exposes(), None)
+            .expect("a valid overlay")
+            .validate()
+            .expect("a valid overlay");
+        let burst = || -> Vec<Packet<TestBuffer>> {
+            (0..32u16)
+                .filter_map(|n| {
+                    let src = format!("1.1.0.{}", 1 + n % 8).parse().ok()?;
+                    let dst = "3.3.3.1".parse().ok()?;
+                    let mut p = super::round_trip::udp(src, dst, 1000 + n, 80)?;
+                    arrive(&mut p, local());
+                    Some(p)
+                })
+                .collect()
+        };
+        for &frame in frames {
+            let mut fabric =
+                Fabric::over_framed(&overlay, None, Arc::new(FlowTable::default()), frame);
+            let warm = fabric.send_batch(burst());
+            assert!(
+                warm.iter().all(|p| !p.is_done()),
+                "{frame:?}: the fixture drops"
+            );
+            // Under `perf … -D -1 --control fifo:ctl,ack`, with `DATAPLANE_PERF_CTL=ctl,ack`,
+            // count only the timed region: building packets would otherwise dominate.
+            let mut perf = std::env::var("DATAPLANE_PERF_CTL").ok().map(|paths| {
+                let (ctl, ack) = paths.split_once(',').expect("ctl,ack");
+                let ctl = std::fs::OpenOptions::new()
+                    .write(true)
+                    .open(ctl)
+                    .expect("ctl");
+                let ack = std::io::BufReader::new(std::fs::File::open(ack).expect("ack"));
+                (ctl, ack)
+            });
+            let mut toggle = |command: &str| {
+                use std::io::{BufRead, Write};
+                if let Some((ctl, ack)) = perf.as_mut() {
+                    ctl.write_all(command.as_bytes()).expect("ctl");
+                    let mut line = String::new();
+                    ack.read_line(&mut line).expect("ack");
+                }
+            };
+            let mut spent = std::time::Duration::ZERO;
+            for _ in 0..rounds {
+                let packets = burst();
+                toggle("enable\n");
+                let start = std::time::Instant::now();
+                let out = fabric.send_batch(packets);
+                spent += start.elapsed();
+                toggle("disable\n");
+                std::hint::black_box(out);
+            }
+            eprintln!(
+                "{frame:?}: {:.1} ns/packet",
+                spent.as_secs_f64() * 1e9 / f64::from(rounds * 32)
+            );
+        }
+    }
+
+    #[test]
+    fn the_admission_frame_matches_the_legacy_stages() {
+        static SAMPLE: Sample = Sample::new(64);
+        static FORWARDED: AtomicU64 = AtomicU64::new(0);
+        static DROPPED: AtomicU64 = AtomicU64::new(0);
+        static REPLIES: AtomicU64 = AtomicU64::new(0);
+
+        let _eal = dpdk::test_support::start_eal();
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator(Batch)
+            .with_iterations(SAMPLE.cases())
+            .for_each(|(exposes, stacks)| {
+                SAMPLE.draw();
+                settled(|| {
+                    let Some(overlay) = overlay_with_exposes_and_acl(exposes.clone(), None)
+                        .ok()
+                        .and_then(|overlay| overlay.validate().ok())
+                    else {
+                        return;
+                    };
+                    let mut fabrics = [Frame::Legacy, Frame::Admission].map(|frame| {
+                        Fabric::over_framed(&overlay, None, Arc::new(FlowTable::default()), frame)
+                    });
+                    let private = exposes.first().and_then(|e| {
+                        e.ips
+                            .first()
+                            .map(lpm::prefix::PrefixWithOptionalPorts::prefix)
+                    });
+                    let requests = || {
+                        stacks
+                            .iter()
+                            .filter_map(|(_, headers)| {
+                                let mut headers = headers.clone();
+                                aim(&mut headers, private);
+                                let mut packet = wire(&headers)?;
+                                arrive(&mut packet, local());
+                                Some(packet)
+                            })
+                            .collect::<Vec<_>>()
+                    };
+                    // Twice: the second time, the flows the first burst opened exist, so packets
+                    // take the flow filter's bypass and the ACL's flow checks.
+                    for round in 0..2 {
+                        let outs =
+                            agree(&mut fabrics, requests, &format!("requests, round {round}"));
+                        for out in &outs {
+                            if out.is_done() {
+                                DROPPED.fetch_add(1, Ordering::Relaxed);
+                            } else {
+                                FORWARDED.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                        // The replies, as one burst.
+                        let replies = || {
+                            outs.iter()
+                                .filter(|p| !p.is_done())
+                                .filter_map(reply_to)
+                                .collect()
+                        };
+                        let back = agree(&mut fabrics, replies, &format!("replies, round {round}"));
+                        REPLIES.fetch_add(back.len() as u64, Ordering::Relaxed);
+                    }
+                });
+            });
+
+        let (forwarded, dropped, replies) = (
+            FORWARDED.load(Ordering::Relaxed),
+            DROPPED.load(Ordering::Relaxed),
+            REPLIES.load(Ordering::Relaxed),
+        );
+        eprintln!("forwarded={forwarded} dropped={dropped} replies={replies}");
+        SAMPLE.assert_covered(forwarded > 0, "no packet was ever forwarded");
+        SAMPLE.assert_covered(dropped > 0, "no packet was ever dropped");
+        SAMPLE.assert_covered(replies > 0, "no reply was ever sent");
     }
 }

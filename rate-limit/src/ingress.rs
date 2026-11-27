@@ -11,12 +11,12 @@ use lpm::prefix::with_ports::KeyPort;
 use match_action::{Erased, ExactSpec, MatchKey};
 use net::buffer::PacketBufferMut;
 use net::ip::NextHeader;
-use net::packet::{Packet, VpcDiscriminant};
+use net::packet::Packet;
 use net::tcp::TcpFlags;
 use net::vxlan::Vni;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
-use crate::classify::{Billing, Classify, Fields, IpVersion, RuleIndex, rows};
+use crate::classify::{Billing, Classify, Fields, IpVersion, RuleIndex, Vpcs, rows};
 
 /// What an ingress rule matches: the source VPC, addresses, protocol, ports and TCP flags. No
 /// destination VPC: that is the flow filter's decision, made later.
@@ -108,8 +108,12 @@ fn table<I: IpVersion>(
 impl Classify for IngressRules {
     const BILLING: Billing = Billing::OuterIp;
 
-    fn classify<Buf: PacketBufferMut>(&self, packet: &Packet<Buf>) -> Option<RuleIndex> {
-        let VpcDiscriminant::VNI(src_vni) = packet.meta().src_vpcd?;
+    fn classify_with<Buf: PacketBufferMut>(
+        &self,
+        packet: &Packet<Buf>,
+        vpcs: Vpcs,
+    ) -> Option<RuleIndex> {
+        let src_vni = vpcs.src?;
         let Fields {
             proto,
             source,

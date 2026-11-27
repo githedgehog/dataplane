@@ -33,10 +33,10 @@ mod tests;
 
 pub use acl::table::Backend;
 pub use acl::table::RuleRow;
-pub use classify::{Billing, Classify, PeeringKey, PeeringKeyRule, PeeringRules, RuleIndex};
+pub use classify::{Billing, Classify, PeeringKey, PeeringKeyRule, PeeringRules, RuleIndex, Vpcs};
 pub use counts::Counts;
 pub use ingress::{IngressKey, IngressKeyRule, IngressRules};
 pub use rules::{
     Action, Component, Meter, Policy, RateLimitReader, RateLimitWriter, RateLimits, Rule, Unit,
 };
-pub use stage::RateLimiter;
+pub use stage::{Policed, RateLimiter};

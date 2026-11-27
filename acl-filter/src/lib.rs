@@ -29,8 +29,10 @@ pub use access::{
 };
 use acl::dpdk::lookup::MAX_BATCH;
 pub use acl::table::RuleRow;
+use arrayvec::ArrayVec;
 use context::AclTables;
 pub use context::{AclKey, AclKeyRule, LookupResult};
+use dag::{Assign, Burst, Drops, Edit, Emit, Forget, Has, Idx, Sel, kind};
 
 pub struct AclFilter {
     name: String,
@@ -106,6 +108,33 @@ impl AclFilter {
         tables: &AclTables,
         genid: i64,
     ) {
+        match self.decide(packet, summary, default_action, direct, tables, genid) {
+            Decision::Deny => {
+                packet.invalidate_flows();
+                packet.done(DoneReason::AclDropped);
+            }
+            Decision::Allow { untrack } => {
+                // If this packet opens a flow, the flow keeps the flags it was classified with,
+                // to classify it again for replies, see PacketSummary::reverse_summary()
+                packet.meta_mut().tcp_flags = summary.tcp_flags;
+                if untrack {
+                    packet.meta_mut().set_forced_flow_tracking(false);
+                }
+            }
+        }
+    }
+
+    /// The verdict for one packet, and what allowing it implies; shared by the legacy and the
+    /// typed stage, which differ only in where they read the VPCs and write the flags.
+    fn decide<Buf: PacketBufferMut>(
+        &self,
+        packet: &Packet<Buf>,
+        summary: &PacketSummary,
+        default_action: Option<AclAction>,
+        direct: Option<&LookupResult>,
+        tables: &AclTables,
+        genid: i64,
+    ) -> Decision {
         let nfi = &self.name;
         let valid_flow = self.packet_has_valid_flow(packet.meta(), genid);
         let has_valid_flow = valid_flow.is_some();
@@ -114,22 +143,114 @@ impl AclFilter {
             Self::verdict(summary, default_action, direct, valid_flow, tables);
         if verdict == AclAction::Deny {
             debug!("{nfi}: Packet rejected by ACLs, dropping packet");
-            packet.invalidate_flows();
-            packet.done(DoneReason::AclDropped);
-            return;
+            return Decision::Deny;
         }
-
-        // If this packet opens a flow, the flow keeps the flags it was classified with, to classify
-        // it again for replies, see PacketSummary::reverse_summary()
-        packet.meta_mut().tcp_flags = summary.tcp_flags;
 
         // The flow filter requests flow tracking for all packets of a peering with flow-scoped
         // rules. Only flows opened by such a rule need it: we never use the others to let replies
         // through, so they would only take room in the flow table. Packets on a valid flow keep
         // the request, so that tracking keeps updating the flow.
-        if !has_valid_flow && !flow_scoped_allow && packet.meta().has_forced_flow_tracking() {
+        let untrack =
+            !has_valid_flow && !flow_scoped_allow && packet.meta().has_forced_flow_tracking();
+        if untrack {
             debug!("{nfi}: Packet not allowed by a flow-scoped rule, no flow tracking needed");
-            packet.meta_mut().set_forced_flow_tracking(false);
+        }
+        Decision::Allow { untrack }
+    }
+
+    /// The typed stage: filter a selection whose VPCs are proven, batching lookups as the legacy
+    /// stage does. Allowed packets carry the TCP flags they were classified with
+    /// ([`kind::OpeningTcpFlags`]), when they are TCP with a header.
+    pub fn process_sel<'b, Buf, S>(
+        &mut self,
+        burst: &mut Burst<'b, Buf>,
+        input: Sel<'b, S>,
+    ) -> Filtered<'b, S>
+    where
+        Buf: PacketBufferMut,
+        S: Has<kind::SrcVpc> + Has<kind::DstVpc> + Edit<kind::OpeningTcpFlags>,
+    {
+        let guard = self.tablesr.load();
+        let tables = &guard.acls;
+        let genid = self.pipeline_data.genid();
+        let mut allowed = Emit::<S, Assign<kind::OpeningTcpFlags>>::new();
+        let mut dropped = Drops::none();
+        let mut input = input.into_iter().peekable();
+        while input.peek().is_some() {
+            // 1. Summarize up to MAX_BATCH packets; drop those that cannot be summarized. As in
+            //    the legacy `process_chunk`: summaries in place, not moved through a buffer.
+            let mut held: ArrayVec<Idx<'b, S>, MAX_BATCH> = ArrayVec::new();
+            let mut summaries: [Option<PacketSummary>; MAX_BATCH] = [const { None }; MAX_BATCH];
+            let mut defaults: [Option<AclAction>; MAX_BATCH] = [None; MAX_BATCH];
+            let mut last: Option<((Vni, Vni), Option<AclAction>)> = None;
+            while !held.is_full() {
+                let Some(i) = input.next() else { break };
+                let meta = burst.meta(&i);
+                let (src, dst) = (*meta.get::<kind::SrcVpc>(), *meta.get::<kind::DstVpc>());
+                match PacketSummary::of(burst.packet(&i), Some(src), Some(dst)) {
+                    Ok(summary) => {
+                        let pair = (summary.src_vni, summary.dst_vni);
+                        let n = held.len();
+                        defaults[n] = match last {
+                            Some((seen, default)) if seen == pair => default,
+                            _ => {
+                                let default = tables.find_default_action(pair.0, pair.1);
+                                last = Some((pair, default));
+                                default
+                            }
+                        };
+                        summaries[n] = Some(summary);
+                        held.push(i);
+                    }
+                    Err(reason) => burst.drop(&mut dropped, i, reason),
+                }
+            }
+            let n = held.len();
+            // 2. Look up the packets with an ACL, all at once.
+            let mut wanted: [Option<&PacketSummary>; MAX_BATCH] = [None; MAX_BATCH];
+            for (want, (summary, default)) in wanted.iter_mut().zip(summaries.iter().zip(&defaults))
+            {
+                *want = summary.as_ref().filter(|_| default.is_some());
+            }
+            let mut direct = [None; MAX_BATCH];
+            tables.lookup_batch(&wanted[..n], &mut direct[..n]);
+            // 3. Decide, then apply each packet's verdict.
+            let mut decisions = [Decision::Deny; MAX_BATCH];
+            for (k, i) in held.iter().enumerate() {
+                if let Some(summary) = &summaries[k] {
+                    decisions[k] = self.decide(
+                        burst.packet(i),
+                        summary,
+                        defaults[k],
+                        direct[k],
+                        tables,
+                        genid,
+                    );
+                }
+            }
+            for (k, i) in held.into_iter().enumerate() {
+                match decisions[k] {
+                    Decision::Deny => {
+                        burst.packet(&i).invalidate_flows();
+                        burst.drop(&mut dropped, i, DoneReason::AclDropped);
+                    }
+                    Decision::Allow { untrack } => {
+                        if untrack {
+                            // Still a legacy flag: the flow tracker reads it.
+                            burst
+                                .packet_mut(&i)
+                                .meta_mut()
+                                .set_forced_flow_tracking(false);
+                        }
+                        let tcp_flags = summaries[k].as_ref().and_then(|s| s.tcp_flags);
+                        allowed.push(burst, i, tcp_flags);
+                    }
+                }
+            }
+        }
+        Filtered {
+            allowed: allowed.finish(),
+            dropped,
         }
     }
 
@@ -228,6 +349,25 @@ impl<Buf: PacketBufferMut> NetworkFunction<Buf> for AclFilter {
     }
 }
 
+/// What the ACL decided for one packet.
+#[derive(Debug, Clone, Copy)]
+enum Decision {
+    Deny,
+    /// Allowed; `untrack`: withdraw the flow filter's tracking request.
+    Allow {
+        untrack: bool,
+    },
+}
+
+/// What the typed ACL stage does with its input.
+#[derive(Debug)]
+pub struct Filtered<'b, S: Edit<kind::OpeningTcpFlags>> {
+    /// Allowed, with [`kind::OpeningTcpFlags`] set for TCP packets carrying a header.
+    pub allowed: Sel<'b, Forget<S, kind::OpeningTcpFlags>>,
+    /// Denied, or not filterable (malformed, not IP).
+    pub dropped: Drops<'b>,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct PacketSummary {
     pub(crate) src_vni: Vni,
@@ -244,7 +384,18 @@ impl<Buf: PacketBufferMut> TryFrom<&Packet<Buf>> for PacketSummary {
     type Error = DoneReason;
 
     fn try_from(packet: &Packet<Buf>) -> Result<Self, Self::Error> {
-        let Some((src_vpcd, dst_vpcd)) = packet.meta().src_vpcd.zip(packet.meta().dst_vpcd) else {
+        PacketSummary::of(packet, packet.meta().src_vpcd, packet.meta().dst_vpcd)
+    }
+}
+
+impl PacketSummary {
+    /// Summarize `packet`, going between the given VPCs.
+    fn of<Buf: PacketBufferMut>(
+        packet: &Packet<Buf>,
+        src_vpcd: Option<VpcDiscriminant>,
+        dst_vpcd: Option<VpcDiscriminant>,
+    ) -> Result<Self, DoneReason> {
+        let Some((src_vpcd, dst_vpcd)) = src_vpcd.zip(dst_vpcd) else {
             debug!("Missing source or destination VPC discriminant, dropping packet");
             return Err(DoneReason::Unroutable);
         };

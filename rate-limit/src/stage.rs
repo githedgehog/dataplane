@@ -3,16 +3,20 @@
 
 //! The pipeline stage.
 
-use crate::classify::Classify;
+use crate::classify::PeeringRules;
+use crate::classify::{Classify, Vpcs};
 use crate::counts::Counts;
 use crate::drops::Dropped;
+use crate::ingress::IngressRules;
 use crate::rules::{Action, Enforcement, RateLimitReader, RateLimits};
+use clock::Instant;
 use concurrency::sync::Arc;
 use config::external::overlay::ratelimit::ColorAction;
+use dag::{Burst, Drops, Emit, Has, Keep, Meta, Sel, State, kind};
 use net::buffer::PacketBufferMut;
 use net::headers::{Net, TryIpMut};
 use net::ip::dscp::Dscp;
-use net::packet::{DoneReason, Packet};
+use net::packet::{DoneReason, Packet, VpcDiscriminant};
 use net::vxlan::Vni;
 use pipeline::NetworkFunction;
 use policer::{Color, LocalMeter};
@@ -134,6 +138,127 @@ fn remark<Buf: PacketBufferMut>(packet: &mut Packet<Buf>, dscp: Dscp) {
     }
 }
 
+impl<C: Classify> RateLimiter<C> {
+    /// Police one packet going between `vpcs`: `Some(reason)` if it must be dropped. Remarking
+    /// happens in place.
+    fn police<Buf: PacketBufferMut>(
+        &mut self,
+        limits: &RateLimits<C>,
+        packet: &mut Packet<Buf>,
+        vpcs: Vpcs,
+        now: Instant,
+    ) -> Option<DoneReason> {
+        let index = limits.classifier.classify_with(packet, vpcs)?;
+        let meter_index = match limits.rules[index].action {
+            Action::Police(meter) => meter,
+            Action::Drop => {
+                if let Some(Some(dropped)) = self.rule_drops.get(index) {
+                    dropped.add();
+                }
+                return Some(DoneReason::IngressDropped);
+            }
+        };
+        let bytes = C::BILLING.bytes(packet)?;
+        let meter = &limits.meters[meter_index];
+        let mut color = Color::Green;
+        for unit in crate::rules::Unit::ALL {
+            let i = unit.index();
+            let Some(component) = meter.components[i].as_ref() else {
+                continue;
+            };
+            let Some(local) = self.locals[meter_index][i].as_mut() else {
+                continue;
+            };
+            color = local.meter.color(now, unit.cost(bytes), color);
+            local.counts.add(color, bytes);
+            match component.action(color) {
+                ColorAction::Pass => {}
+                ColorAction::Remark(dscp) => remark(packet, dscp),
+                ColorAction::Drop => return Some(DoneReason::RateLimited),
+            }
+        }
+        None
+    }
+
+    /// Police a selection: the typed stage, generic over what else its input carries. `vpcs`
+    /// reads the VPCs from the proven metadata.
+    fn run<'b, Buf: PacketBufferMut, S: State>(
+        &mut self,
+        burst: &mut Burst<'b, Buf>,
+        input: Sel<'b, S>,
+        vpcs: impl Fn(&Meta<'_, S>) -> Vpcs,
+    ) -> Policed<'b, S> {
+        let limits = self.reader.load();
+        self.follow(&limits);
+        if limits.rules.is_empty() {
+            return Policed {
+                passed: input,
+                dropped: Drops::none(),
+            };
+        }
+        let mut passed = Emit::<S, Keep>::new();
+        let mut dropped = Drops::none();
+        let now = clock::now();
+        for i in input {
+            let vpcs = vpcs(&burst.meta(&i));
+            match self.police(&limits, burst.packet_mut(&i), vpcs, now) {
+                None => passed.push(i),
+                Some(reason) => burst.drop(&mut dropped, i, reason),
+            }
+        }
+        Policed {
+            passed: passed.finish(),
+            dropped,
+        }
+    }
+}
+
+/// The VNI of a VPC.
+fn vni(VpcDiscriminant::VNI(vni): VpcDiscriminant) -> Vni {
+    vni
+}
+
+/// What a typed rate limiter does with its input.
+#[derive(Debug)]
+pub struct Policed<'b, S> {
+    /// Within their limits (possibly remarked).
+    pub passed: Sel<'b, S>,
+    /// Dropped by a drop rule or a meter.
+    pub dropped: Drops<'b>,
+}
+
+impl RateLimiter<IngressRules> {
+    /// The gateway's ingress policy, on packets whose source VPC is known.
+    pub fn process_sel<'b, Buf: PacketBufferMut, S: Has<kind::SrcVpc>>(
+        &mut self,
+        burst: &mut Burst<'b, Buf>,
+        input: Sel<'b, S>,
+    ) -> Policed<'b, S> {
+        self.run(burst, input, |meta| Vpcs {
+            src: Some(vni(*meta.get::<kind::SrcVpc>())),
+            dst: None,
+        })
+    }
+}
+
+impl RateLimiter<PeeringRules> {
+    /// Peering rate limits, on packets whose source and destination VPCs are known.
+    pub fn process_sel<'b, Buf, S>(
+        &mut self,
+        burst: &mut Burst<'b, Buf>,
+        input: Sel<'b, S>,
+    ) -> Policed<'b, S>
+    where
+        Buf: PacketBufferMut,
+        S: Has<kind::SrcVpc> + Has<kind::DstVpc>,
+    {
+        self.run(burst, input, |meta| Vpcs {
+            src: Some(vni(*meta.get::<kind::SrcVpc>())),
+            dst: Some(vni(*meta.get::<kind::DstVpc>())),
+        })
+    }
+}
+
 impl<Buf: PacketBufferMut, C: Classify> NetworkFunction<Buf> for RateLimiter<C> {
     fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
         let limits = self.reader.load();
@@ -146,42 +271,9 @@ impl<Buf: PacketBufferMut, C: Classify> NetworkFunction<Buf> for RateLimiter<C> 
             .iter_mut()
             .filter(|packet| !packet.is_done() && packet.meta().is_overlay())
         {
-            let Some(index) = limits.classifier.classify(packet) else {
-                continue;
-            };
-            let meter_index = match limits.rules[index].action {
-                Action::Police(meter) => meter,
-                Action::Drop => {
-                    if let Some(Some(dropped)) = self.rule_drops.get(index) {
-                        dropped.add();
-                    }
-                    packet.done(DoneReason::IngressDropped);
-                    continue;
-                }
-            };
-            let Some(bytes) = C::BILLING.bytes(packet) else {
-                continue;
-            };
-            let meter = &limits.meters[meter_index];
-            let mut color = Color::Green;
-            for unit in crate::rules::Unit::ALL {
-                let i = unit.index();
-                let Some(component) = meter.components[i].as_ref() else {
-                    continue;
-                };
-                let Some(local) = self.locals[meter_index][i].as_mut() else {
-                    continue;
-                };
-                color = local.meter.color(now, unit.cost(bytes), color);
-                local.counts.add(color, bytes);
-                match component.action(color) {
-                    ColorAction::Pass => {}
-                    ColorAction::Remark(dscp) => remark(packet, dscp),
-                    ColorAction::Drop => {
-                        packet.done(DoneReason::RateLimited);
-                        break;
-                    }
-                }
+            let vpcs = Vpcs::of(packet.meta());
+            if let Some(reason) = self.police(&limits, packet, vpcs, now) {
+                packet.done(reason);
             }
         }
     }

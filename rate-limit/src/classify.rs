@@ -22,12 +22,41 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 /// A rule's position in its configuration.
 pub type RuleIndex = usize;
 
+/// The VPCs a packet goes between, as far as a stage knows them: from the packet's
+/// [`PacketMeta`](net::packet::PacketMeta) in a legacy stage, from proven metadata in a typed one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Vpcs {
+    /// The VPC it arrived from.
+    pub src: Option<Vni>,
+    /// The VPC it goes to.
+    pub dst: Option<Vni>,
+}
+
+impl Vpcs {
+    /// As the packet's legacy metadata has them.
+    #[must_use]
+    pub fn of(meta: &net::packet::PacketMeta) -> Vpcs {
+        Vpcs {
+            src: meta.src_vpcd.map(|VpcDiscriminant::VNI(vni)| vni),
+            dst: meta.dst_vpcd.map(|VpcDiscriminant::VNI(vni)| vni),
+        }
+    }
+}
+
 /// Selects the first matching rule.
 pub trait Classify: Send + Sync {
     /// What the bytes components of its rules' meters count.
     const BILLING: Billing;
-    /// The rule matching this packet, if any.
-    fn classify<Buf: PacketBufferMut>(&self, packet: &Packet<Buf>) -> Option<RuleIndex>;
+    /// The rule matching this packet, going between `vpcs`, if any.
+    fn classify_with<Buf: PacketBufferMut>(
+        &self,
+        packet: &Packet<Buf>,
+        vpcs: Vpcs,
+    ) -> Option<RuleIndex>;
+    /// The rule matching this packet, if any, with the VPCs its legacy metadata names.
+    fn classify<Buf: PacketBufferMut>(&self, packet: &Packet<Buf>) -> Option<RuleIndex> {
+        self.classify_with(packet, Vpcs::of(packet.meta()))
+    }
 }
 
 /// What a byte of a meter's bytes component is: the unit its rates and bursts are in.
@@ -231,9 +260,13 @@ impl Fields {
 impl Classify for PeeringRules {
     const BILLING: Billing = Billing::Ip;
 
-    fn classify<Buf: PacketBufferMut>(&self, packet: &Packet<Buf>) -> Option<RuleIndex> {
-        let VpcDiscriminant::VNI(src_vni) = packet.meta().src_vpcd?;
-        let VpcDiscriminant::VNI(dst_vni) = packet.meta().dst_vpcd?;
+    fn classify_with<Buf: PacketBufferMut>(
+        &self,
+        packet: &Packet<Buf>,
+        vpcs: Vpcs,
+    ) -> Option<RuleIndex> {
+        let src_vni = vpcs.src?;
+        let dst_vni = vpcs.dst?;
         let Fields {
             proto,
             source,

@@ -16,6 +16,7 @@ clock = { workspace = true }
 common = { workspace = true }
 concurrency = { workspace = true }
 config = { workspace = true }
+dag = { workspace = true }
 dpdk = { workspace = true }
 lookup = { workspace = true }
 lpm = { workspace = true }

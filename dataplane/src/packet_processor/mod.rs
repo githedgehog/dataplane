@@ -2,6 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use flow_entry::flow_table::{TimerRegistry, WorkerFlowTable};
+mod admission;
 mod egress;
 #[cfg(test)]
 mod fuzz;
@@ -37,7 +38,7 @@ use arp::{ArpNfFactory, ArpSetup, NeighCacheReaderFactory};
 use net::buffer::{BufferPool, DeepCopy, PacketBufferMut};
 use net::packet::Rebuffer;
 use pipeline::sample_nfs::{PacketDumper, PacketStatsNF};
-use pipeline::{DynPipeline, PipelineData};
+use pipeline::{DynPipeline, PipelineData, StaticChain};
 
 use routing::{
     CliSources, FibKey, FibTableReaderFactory, IfTableReaderFactory, Router, RouterError,
@@ -188,20 +189,44 @@ impl PipelineIngredients {
         // Build pipeline for overlay packet processing.
         // Flows expire on the worker's timer wheel, which the worker
         // drives through `WorkerFlowTable::expire`; no stage is needed for it.
-        DynPipeline::new()
-            // First on decapsulated packets: the ingress policy depends on nothing a later
-            // stage decides, which is what lets a NIC enforce it exactly, in front of this.
-            .add_stage(ingress_rate_limit)
-            .add_stage(icmp_error_handler)
-            .add_stage(flow_lookup)
-            .add_stage(flow_filter)
-            // Before the ACLs, so that they see the SYN built from a client's ACK echoing a
-            // cookie, as they would see the client's own SYN without the proxy.
-            .add_stage(cookie_checker)
-            .add_stage(acl_filter)
-            // After the ACLs, so that denied packets are not charged; before NAT, so that rate
-            // limits see destinations as the source VPC addresses them.
-            .add_stage(egress_rate_limit)
+        //
+        // The admission stages, from the ingress rate limit to the egress one, run in one of
+        // three frames (`DATAPLANE_ADMISSION_FRAME`, for the slice-1 A/B; see `admission`).
+        let pipeline = DynPipeline::new();
+        let pipeline = match admission::Frame::from_env() {
+            admission::Frame::Legacy => pipeline
+                // First on decapsulated packets: the ingress policy depends on nothing a later
+                // stage decides, which is what lets a NIC enforce it exactly, in front of this.
+                .add_stage(ingress_rate_limit)
+                .add_stage(icmp_error_handler)
+                .add_stage(flow_lookup)
+                .add_stage(flow_filter)
+                // Before the ACLs, so that they see the SYN built from a client's ACK echoing a
+                // cookie, as they would see the client's own SYN without the proxy.
+                .add_stage(cookie_checker)
+                .add_stage(acl_filter)
+                // After the ACLs, so that denied packets are not charged; before NAT, so that
+                // rate limits see destinations as the source VPC addresses them.
+                .add_stage(egress_rate_limit),
+            admission::Frame::Chained => pipeline.add_stage(
+                ingress_rate_limit
+                    .chain(icmp_error_handler)
+                    .chain(flow_lookup)
+                    .chain(flow_filter)
+                    .chain(cookie_checker)
+                    .chain(acl_filter)
+                    .chain(egress_rate_limit),
+            ),
+            admission::Frame::Admission => pipeline.add_stage(admission::Admission::new(
+                Some(ingress_rate_limit),
+                icmp_error_handler.chain(flow_lookup),
+                flow_filter,
+                cookie_checker,
+                acl_filter,
+                Some(egress_rate_limit),
+            )),
+        };
+        pipeline
             // After the ACLs and rate limits, so as not to answer SYNs that the gateway drops;
             // before NAT, where answering either end only takes swapping the addresses.
             .add_stage(syn_proxy)
