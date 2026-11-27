@@ -27,17 +27,21 @@ mod capture;
 pub mod cmis;
 #[cfg(feature = "ethtool")]
 pub mod ethtool;
+mod flat;
 mod memory;
 mod module;
 pub mod sff8024;
 pub mod sff8472;
 pub mod sff8636;
+mod summary;
 mod units;
 
 pub use capture::{Capture, DecodeError, Eeprom, ReadError, decode, read};
+pub use flat::{Flat, FlatEeprom, FlatError, FlatLayout};
 pub use memory::{Block, Bytes, HALF, I2cAddress, Image, Lower, Region, Upper};
 pub use module::{
     Bounds, Crossings, Detail, Flags, Inventory, LaneFlags, LaneMonitors, Length, Module, Monitors,
     Reach, RxPowerKind, Thresholds, Wavelength,
 };
+pub use summary::{CableClass, Summary};
 pub use units::{BiasMultiplier, Current, Power, Temperature, Voltage};

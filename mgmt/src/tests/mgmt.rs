@@ -597,6 +597,7 @@ pub mod test {
             bmp_options: None,
             gwname: GatewayName::new("test-gw").unwrap(),
             control_plane,
+            ports: tokio::sync::watch::channel(Default::default()).1,
         };
 
         let rth = tokio::runtime::Handle::current();

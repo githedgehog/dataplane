@@ -18,14 +18,18 @@ mod classes;
 mod control;
 mod idle;
 mod inject;
+mod modules;
 mod placement;
 mod port;
 mod worker;
 mod xstats;
 
 use crate::packet_processor::{PipelineFactory, WorkerContext};
+use crate::transceiver_agent::ModuleSnapshot;
+use concurrency::sync::atomic::Ordering;
 use std::convert::Infallible;
 use std::num::NonZero;
+use std::time::{Duration, SystemTime};
 
 use args::IdleConfig;
 
@@ -44,9 +48,11 @@ use tracectl::trace_target;
 use tracing::{info, warn};
 use traffic_control::ControlPlane;
 
+use modules::ModuleReaders;
+
 use super::DriverError;
 use super::load::Load;
-use super::status::{DriverStatusWriter, PortReport, RxQueue};
+use super::status::{DriverStatusWriter, PortReport, RateMeter, RxQueue};
 use super::supervisor::{RxTaskMonitor, WorkerMonitor, spawn_supervisor};
 
 pub(crate) use crate::drivers::cpbridge::{CpBridge, DatapathEnds, PortIdentity};
@@ -72,6 +78,9 @@ impl DriverDpdk {
     /// `control_plane` is what the control-plane classes are built from; the control worker steers
     /// them to the control queues and follows its changes.
     ///
+    /// With a `transceiver_interval`, the supervisor also reads the pluggable modules of the ports
+    /// without a kernel netdev, and publishes them to `transceivers`.
+    ///
     /// # Errors
     ///
     /// Returns an error for missing ports or queues, or thread spawn failures.
@@ -88,6 +97,8 @@ impl DriverDpdk {
         bridge: Option<&mut DatapathEnds>,
         control_plane: watch::Receiver<ControlPlane>,
         offload: &nic_offload::Policy,
+        transceiver_interval: Option<Duration>,
+        transceivers: watch::Sender<ModuleSnapshot>,
     ) -> Result<(), DriverError>
     where
         'p: 'scope,
@@ -157,6 +168,9 @@ impl DriverDpdk {
             .zip(links)
             .map(|(port, link)| PortTelemetry::new(port, link))
             .collect();
+        let mut modules = transceiver_interval
+            .and_then(|interval| ModuleReaders::new(ports, interval, transceivers));
+        let stopping = workers_subsystem.clone();
         spawn_supervisor(
             scope,
             "dpdk",
@@ -167,7 +181,14 @@ impl DriverDpdk {
             move || {
                 publish_heaps(ports);
                 let counters = publish_port_counters(&port_metrics, &mut counters_unavailable);
-                publish_port_states(&mut port_states, counters)
+                let reports = publish_port_states(&mut port_states, counters);
+                // Not on the last call, once the workers have stopped.
+                if let Some(modules) = &mut modules
+                    && !stopping.is_cancelled()
+                {
+                    modules.poll(&reports);
+                }
+                reports
             },
         )?;
         for (node, heap) in heaps(ports) {
@@ -364,6 +385,11 @@ struct PortTelemetry<'p, 'eal> {
     up: Option<bool>,
     /// Times the link went up or down between readings.
     changes: u64,
+    /// When the link last went up or down, or was first read, by the wall clock.
+    last_change: Option<SystemTime>,
+    /// When the port's counters started, about when the port did.
+    counters_since: SystemTime,
+    rates: RateMeter,
     /// The ids and names of the extended statistics published, and where they are read into.
     xstat_ids: Vec<u64>,
     xstat_names: Vec<String>,
@@ -413,6 +439,9 @@ impl<'p, 'eal> PortTelemetry<'p, 'eal> {
             ),
             up: None,
             changes: 0,
+            last_change: None,
+            counters_since: clock::system_now(),
+            rates: RateMeter::default(),
             xstat_ids: wanted.iter().map(|x| x.id).collect(),
             xstat_names: wanted.iter().map(|x| x.name.clone()).collect(),
             xstat_values: vec![0; wanted.len()],
@@ -434,11 +463,12 @@ impl<'p, 'eal> PortTelemetry<'p, 'eal> {
 /// Returns a report on each port, with the `counters` read from it, for the driver's status.
 fn publish_port_states(
     ports: &mut [PortTelemetry<'_, '_>],
-    counters: Vec<Option<PortCounters>>,
+    counters: Vec<Option<(PortCounters, clock::Instant)>>,
 ) -> Vec<PortReport> {
     let mut reports = Vec::with_capacity(ports.len());
-    for (telemetry, counters) in ports.iter_mut().zip(counters) {
+    for (telemetry, read) in ports.iter_mut().zip(counters) {
         let port = telemetry.port;
+        let counters = read.map(|(counters, _)| counters);
         let link = match port.dev.link() {
             Ok(link) => Some(link),
             Err(e) => {
@@ -449,8 +479,12 @@ fn publish_port_states(
             }
         };
         let up = link.is_some_and(|link| link.up);
-        if telemetry.up.is_some_and(|was| was != up) {
-            telemetry.changes += 1;
+        // The first reading stamps the time, but is no change.
+        if telemetry.up != Some(up) {
+            if telemetry.up.is_some() {
+                telemetry.changes += 1;
+            }
+            telemetry.last_change = Some(clock::system_now());
         }
         telemetry.up = Some(up);
         if let Some(tap_link) = &telemetry.tap_link {
@@ -502,10 +536,16 @@ fn publish_port_states(
             mtu: port.mtu,
             link_up: state.link_up,
             speed_mbps: state.speed_mbps,
+            autoneg: link.map(|link| link.autoneg),
+            full_duplex: link.map(|link| link.full_duplex),
             link_changes: state.link_changes,
+            last_change: telemetry.last_change,
             counters,
-            rx_pool: state.rx_pool,
-            control_pool: state.control_pool,
+            tx_discards: port.tx_discards.load(Ordering::Relaxed),
+            rates: read.and_then(|(counters, at)| telemetry.rates.update(counters, at)),
+            counters_since: Some(telemetry.counters_since),
+            rx_pool: Some(state.rx_pool),
+            control_pool: Some(state.control_pool),
             xstats: if telemetry.xstats_failed {
                 Vec::new()
             } else {
@@ -521,20 +561,23 @@ fn publish_port_states(
     reports
 }
 
-/// Publish device counters, logging once per port until a failed read recovers, and return them.
+/// Publish device counters, logging once per port until a failed read recovers, and return them
+/// with when they were read.
 fn publish_port_counters(
     port_metrics: &[(&Port<'_>, PortMetrics)],
     unavailable: &mut [bool],
-) -> Vec<Option<PortCounters>> {
+) -> Vec<Option<(PortCounters, clock::Instant)>> {
     port_metrics
         .iter()
         .enumerate()
         .map(|(slot, (port, metrics))| match port.counters() {
             Ok(counters) => {
+                // When they were read, for rates: other queries to come may take a while.
+                let at = clock::now();
                 metrics.publish(&counters);
                 // Report a later failure after recovery.
                 unavailable[slot] = false;
-                Some(counters)
+                Some((counters, at))
             }
             Err(e) => {
                 if !unavailable[slot] {

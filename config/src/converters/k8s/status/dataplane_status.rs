@@ -7,8 +7,9 @@ use jiff::Timestamp;
 
 use k8s_intf::gateway_agent_crd::{
     GatewayAgentStatus, GatewayAgentStatusState, GatewayAgentStatusStateBgp,
-    GatewayAgentStatusStateDataplane, GatewayAgentStatusStateFrr, GatewayAgentStatusStatePeerings,
-    GatewayAgentStatusStateVpcs,
+    GatewayAgentStatusStateDataplane, GatewayAgentStatusStateFrr,
+    GatewayAgentStatusStateInterfaces, GatewayAgentStatusStatePeerings,
+    GatewayAgentStatusStateTransceivers, GatewayAgentStatusStateVpcs,
 };
 
 use crate::converters::k8s::ToK8sConversionError;
@@ -91,14 +92,35 @@ impl TryFrom<&DataplaneStatusForK8sConversion<'_>> for GatewayAgentStatus {
             last_applied_gen: status.last_applied_gen,
             last_applied_time: status.last_applied_time.map(to_k8s_time),
             last_heartbeat: status.last_heartbeat.map(to_k8s_time),
-            state: status.status.map(|_| GatewayAgentStatusState {
+            state: status.status.map(|dp| GatewayAgentStatusState {
                 bgp,
                 dataplane: Some(GatewayAgentStatusStateDataplane {
                     version: Some(option_env!("VERSION").unwrap_or("dev").to_string()),
                 }),
                 frr: frr_status,
+                interfaces: Some(
+                    dp.ports
+                        .iter()
+                        .map(|(name, port)| {
+                            (name.clone(), GatewayAgentStatusStateInterfaces::from(port))
+                        })
+                        .collect::<BTreeMap<_, _>>(),
+                )
+                .filter(|ports| !ports.is_empty()),
                 last_collected_time: status.last_collected_time.map(to_k8s_time),
                 peerings: peerings.filter(|c| !c.is_empty()),
+                transceivers: Some(
+                    dp.transceivers
+                        .iter()
+                        .map(|(name, module)| {
+                            (
+                                name.clone(),
+                                GatewayAgentStatusStateTransceivers::from(module),
+                            )
+                        })
+                        .collect::<BTreeMap<_, _>>(),
+                )
+                .filter(|modules| !modules.is_empty()),
                 vpcs: vpcs.filter(|c| !c.is_empty()),
             }),
         })
@@ -255,6 +277,16 @@ mod tests {
                             );
                         }
                     }
+
+                    let dp = conv_status.status.expect("status should not be None");
+                    assert_eq!(
+                        state.interfaces.as_ref().map_or(0, BTreeMap::len),
+                        dp.ports.len()
+                    );
+                    assert_eq!(
+                        state.transceivers.as_ref().map_or(0, BTreeMap::len),
+                        dp.transceivers.len()
+                    );
 
                     match state.peerings.as_ref() {
                         // Specifics tested elsewhere

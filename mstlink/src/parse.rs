@@ -58,6 +58,32 @@ pub struct Operational {
     pub auto_negotiation: Option<String>,
 }
 
+impl Operational {
+    /// The FEC in use, in the words switches report it with: `disabled`, `fc`, `rs`, `rs528` or
+    /// `rs544`, or `enabled` for a FEC `mstlink` names in a way this does not recognize.
+    ///
+    /// Only `No FEC` and `Standard_RS-FEC - (544,514)` have been seen from `mstlink`; the other
+    /// spellings matched here are guesses.
+    #[must_use]
+    pub fn fec_mode(&self) -> Option<&'static str> {
+        let fec = self.fec.as_deref()?.trim();
+        let upper = fec.to_ascii_uppercase();
+        Some(if upper.starts_with("NO FEC") || upper == "NONE" {
+            "disabled"
+        } else if upper.contains("544") {
+            "rs544"
+        } else if upper.contains("528") {
+            "rs528"
+        } else if upper.contains("RS") {
+            "rs"
+        } else if upper.contains("FIRECODE") || upper.contains("FC") {
+            "fc"
+        } else {
+            "enabled"
+        })
+    }
+}
+
 /// The firmware's diagnosis of the link.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Troubleshooting {

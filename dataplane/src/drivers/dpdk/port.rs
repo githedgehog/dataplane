@@ -37,6 +37,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 use concurrency::sync::Arc;
+use concurrency::sync::atomic::{AtomicU64, Ordering};
 
 use super::classes::Fallback;
 use super::inject::Injector;
@@ -478,6 +479,8 @@ pub(crate) struct Port<'eal> {
     pub(crate) rx_interrupts: bool,
     /// Whether the port reserved resources for [`nic_offload`], and so can be programmed by it.
     pub(crate) offload: bool,
+    /// Frames the port's transmit queues could not take, from every worker.
+    pub(crate) tx_discards: Arc<AtomicU64>,
 }
 
 impl<'eal> Port<'eal> {
@@ -749,6 +752,7 @@ impl<'eal> Port<'eal> {
             control,
             rx_interrupts: config.rx_interrupts,
             offload,
+            tx_discards: Arc::new(AtomicU64::new(0)),
         })
     }
 
@@ -834,6 +838,15 @@ pub(crate) struct PortQueues<'p> {
     pub(crate) injector: Option<Injector<'p>>,
     /// Whether `rx` raises interrupts a sleeping worker can wait on.
     pub(crate) rx_interrupts: bool,
+    /// Where to count frames `tx` could not take, shared with the port's other workers.
+    pub(crate) tx_discards: Arc<AtomicU64>,
+}
+
+impl PortQueues<'_> {
+    /// Count `frames` this port's transmit queue would not take.
+    pub(crate) fn discarded(&self, frames: u64) {
+        self.tx_discards.fetch_add(frames, Ordering::Relaxed);
+    }
 }
 
 /// One port as the control worker sees it.
@@ -989,6 +1002,7 @@ pub(crate) fn deal_queues<'p, 'eal>(
                     None
                 },
                 rx_interrupts: port.rx_interrupts,
+                tx_discards: Arc::clone(&port.tx_discards),
             });
         }
 

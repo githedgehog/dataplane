@@ -41,7 +41,7 @@ impl Kif {
     ///
     /// Only meaningful on a thread in the interface's namespace with a sysfs mounted for it, which the
     /// kernel driver's threads are.
-    fn sysfs(&self) -> PathBuf {
+    pub(super) fn sysfs(&self) -> PathBuf {
         PathBuf::from("/sys/class/net").join(&self.name)
     }
 

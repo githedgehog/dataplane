@@ -221,6 +221,13 @@ fn qsfp112_matches_ethtool() {
         assert_eq!(cmis.data_path.len(), 4);
         assert!(!cmis.applications.is_empty());
         assert_eq!(cmis.applications[0].media_lanes, 4);
+        assert_eq!(
+            cmis.active_applications,
+            [4, 4, 4, 4],
+            "{name}: 11h:206-209"
+        );
+        assert_eq!(cmis.active_application(), Some(4));
+        assert!(cmis.active().is_some());
     }
 }
 
@@ -313,6 +320,7 @@ fn qsfp112_dac_matches_ethtool() {
             copper_attenuation,
             media_technology,
             data_path,
+            active_applications,
             ..
         }) = &module.detail
         else {
@@ -320,6 +328,10 @@ fn qsfp112_dac_matches_ethtool() {
         };
         assert!(flat_memory);
         assert!(data_path.is_empty());
+        assert!(
+            active_applications.is_empty(),
+            "{name}: flat memory has no page 11h"
+        );
         assert_eq!(
             u64::from(*power_class),
             ethtool["power_class"].as_u64().unwrap()
@@ -705,4 +717,73 @@ fn an_unreadable_bank_does_not_renumber_lanes() {
         "every lane of bank 0, none of bank 1"
     );
     assert_eq!(module.monitors.lanes[..original.len()], original[..]);
+}
+
+/// What switches would report about each fixture's module.
+#[test]
+fn fixtures_summarize_as_switches_would() {
+    struct Expected {
+        form_factor: &'static str,
+        connector: Option<&'static str>,
+        cable: &'static str,
+        metres: Option<f64>,
+        description: &'static str,
+    }
+    let fibre = |form_factor, connector, description| Expected {
+        form_factor,
+        connector: Some(connector),
+        cable: "FIBER",
+        metres: None,
+        description,
+    };
+    let assembly = |form_factor, cable, metres, description| Expected {
+        form_factor,
+        connector: Some("NO_SEPARABLE_CONNECTOR"),
+        cable,
+        metres: Some(metres),
+        description,
+    };
+    for (name, expected) in [
+        (
+            "sfp-10g-t-port0",
+            fibre("SFP_PLUS", "LC_CONNECTOR", "SFP+ 10GBASE-SR"),
+        ),
+        (
+            "qsfp28-cwdm4-intel-port0",
+            fibre("QSFP28", "LC_CONNECTOR", "QSFP28 100GBASE-CWDM4"),
+        ),
+        (
+            "qsfp28-sr4-mellanox-port0",
+            assembly("QSFP28", "AOC", 50.0, "QSFP28 100GBASE-SR4-AOC-50.0M"),
+        ),
+        (
+            "qsfp28-dac-port0",
+            assembly("QSFP_PLUS", "DAC", 7.0, "QSFP+ DAC-7.0M"),
+        ),
+        (
+            "qsfp112-sr4-fs-port0",
+            fibre("QSFP112", "MPOx12_CONNECTOR", "QSFP112 400G-VR4"),
+        ),
+        (
+            "qsfp112-dac-port0",
+            assembly("QSFP112", "DAC", 1.5, "QSFP112 400GBASE-CR4-DAC-1.5M"),
+        ),
+    ] {
+        let mut fixture = Fixture::new(name);
+        let (module, _) = read(&mut fixture, Capture::new()).unwrap();
+        let summary = module.summary();
+        assert_eq!(summary.form_factor, expected.form_factor, "{name}");
+        assert_eq!(summary.connector_type, expected.connector, "{name}");
+        assert_eq!(
+            summary.cable.map(|cable| cable.name()),
+            Some(expected.cable),
+            "{name}"
+        );
+        assert_eq!(
+            summary.cable_length.map(|length| length.metres()),
+            expected.metres,
+            "{name}"
+        );
+        assert_eq!(summary.description, expected.description, "{name}");
+    }
 }

@@ -31,7 +31,7 @@ use transceiver::ethtool::{Error, EthtoolEeprom};
 use transceiver::{Bounds, Capture, Crossings, Image, LaneFlags, Module, ReadError};
 
 /// Polls between full reads of a module that is not known to have changed.
-const FULL_READ_EVERY: u32 = 10;
+pub(crate) const FULL_READ_EVERY: u32 = 10;
 
 /// Start reading the modules of every port in `ports`, every `interval`, on `handle`.
 ///
@@ -96,19 +96,9 @@ async fn watch_port(
     cancel: CancellationToken,
 ) {
     let name = port.name.to_string();
-    let show = |reading: PortModule| {
-        publish.send_modify(|snapshot| {
-            snapshot.ports.insert(port.name.clone(), reading);
-        });
-    };
     let index = match datapath_index(&name, port.identity.clone(), &cancel).await {
-        None => return,
-        Some(None) => {
-            show(PortModule::Unread(
-                "the port has no kernel netdev".to_owned(),
-            ));
-            return;
-        }
+        // Without a netdev, the DPDK driver reads the module, if it can.
+        None | Some(None) => return,
         Some(Some(index)) => index,
     };
     let eeprom = EthtoolEeprom::new(ethtool, index);
@@ -148,16 +138,13 @@ async fn watch_port(
             Ok((module, read)) => {
                 note_module(&name, &module, &mut seen);
                 metrics.publish(&module);
-                show(PortModule::Read {
-                    module: Box::new(module),
-                    at: clock::now(),
-                });
+                ModuleSnapshot::record(&publish, &port.name, Ok(module));
                 image = Some(read);
             }
             Err(error) => {
                 metrics.absent();
                 let retry = note_failure(&name, &error, &mut seen);
-                show(PortModule::Unread(error.to_string()));
+                ModuleSnapshot::record(&publish, &port.name, Err(error.to_string()));
                 if !retry {
                     return;
                 }
@@ -180,7 +167,7 @@ async fn datapath_index(
             if let Some(index) = reported.datapath_index {
                 return Some(Some(index.to_u32()));
             }
-            info!("port {name} has no kernel netdev, so its module cannot be read");
+            info!("port {name} has no kernel netdev, so ethtool cannot read its module");
             return Some(None);
         }
         tokio::select! {
@@ -237,6 +224,36 @@ fn note_failure(name: &str, error: &ReadError<Error>, seen: &mut Seen) -> bool {
 #[derive(Debug, Default)]
 pub(crate) struct ModuleSnapshot {
     ports: BTreeMap<InterfaceName, PortModule>,
+}
+
+impl ModuleSnapshot {
+    /// The modules that could be read, by port.
+    pub(crate) fn modules(&self) -> impl Iterator<Item = (&InterfaceName, &Module)> {
+        self.ports
+            .iter()
+            .filter_map(|(port, reading)| match reading {
+                PortModule::Read { module, .. } => Some((port, &**module)),
+                PortModule::Unread(_) => None,
+            })
+    }
+
+    /// Publish what reading the module of `port` found: the module, or why there is none.
+    pub(crate) fn record(
+        publish: &watch::Sender<ModuleSnapshot>,
+        port: &InterfaceName,
+        reading: Result<Module, String>,
+    ) {
+        let reading = match reading {
+            Ok(module) => PortModule::Read {
+                module: Box::new(module),
+                at: clock::now(),
+            },
+            Err(why) => PortModule::Unread(why),
+        };
+        publish.send_modify(|snapshot| {
+            snapshot.ports.insert(port.clone(), reading);
+        });
+    }
 }
 
 /// What was last read from one port's module.

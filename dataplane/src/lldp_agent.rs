@@ -282,6 +282,11 @@ pub(crate) struct NeighborSnapshot {
 }
 
 impl NeighborSnapshot {
+    /// Every neighbour heard, with the port it was heard on.
+    pub(crate) fn neighbors(&self) -> &[(InterfaceName, Neighbor)] {
+        &self.neighbors
+    }
+
     /// How many neighbours are known.
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
@@ -480,7 +485,13 @@ fn hear(
             return None;
         }
     };
-    let heard = table.hear(&frame.port, source, lldpdu, clock::now());
+    let heard = table.hear(
+        &frame.port,
+        source,
+        lldpdu,
+        clock::now(),
+        clock::system_now(),
+    );
     if heard == lldp::Heard::TooMany {
         warn!(
             "LLDP: ignoring a new neighbour on {}, which already has {MAX_NEIGHBORS_PER_PORT}",
