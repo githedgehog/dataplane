@@ -606,6 +606,13 @@ impl<T: Send + Sync> Reader<'_, T> {
         }
     }
 
+    /// Whether this worker still owes the newest generation it read an acknowledgement: it
+    /// should keep polling (empty polls included) until it doesn't.
+    #[must_use]
+    pub fn awaiting(&self) -> bool {
+        self.progress.acknowledged.load(Ordering::Acquire) < self.last.newest
+    }
+
     fn acknowledge(&self, generation: u64) {
         self.progress
             .acknowledged

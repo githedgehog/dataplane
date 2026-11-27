@@ -77,9 +77,14 @@ pub(crate) struct AdmissionTables {
 pub(crate) trait Source {
     /// The live generations' tables, for one burst.
     fn tables(&mut self) -> Tables<'_, AdmissionTables>;
-    /// After a burst. (Empty polls never reach the pipeline: acknowledging on them,
-    /// `dag::generation::Reader::idle`, is for the worker loop to wire, with step 3.)
+    /// After a burst.
     fn settle(&mut self, seen: Seen);
+    /// After an empty poll: the pipeline ran with no packets (a scheduled run, which the worker
+    /// makes only when its queues were empty).
+    fn idle(&mut self);
+    /// Whether the composite should keep running on empty polls: it owes a generation an
+    /// acknowledgement.
+    fn awaiting(&self) -> bool;
 }
 
 /// Today's tables, read from each NF's own reader, as a single generation. What production runs
@@ -104,6 +109,12 @@ impl Source for Current {
     }
 
     fn settle(&mut self, _: Seen) {}
+
+    fn idle(&mut self) {}
+
+    fn awaiting(&self) -> bool {
+        false
+    }
 }
 
 impl Source for Reader<'_, AdmissionTables> {
@@ -113,6 +124,113 @@ impl Source for Reader<'_, AdmissionTables> {
 
     fn settle(&mut self, seen: Seen) {
         Reader::settle(self, seen);
+    }
+
+    fn idle(&mut self) {
+        let _ = self.live();
+        Reader::idle(self);
+    }
+
+    fn awaiting(&self) -> bool {
+        Reader::awaiting(self)
+    }
+}
+
+/// Every worker's scheduled-run handle, for the publisher to wake idle workers after a step:
+/// a worker that receives nothing never runs its pipeline, so it would never observe a new
+/// generation, nor acknowledge one.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Wakers(Arc<concurrency::sync::Mutex<Vec<SchedRun>>>);
+
+impl Wakers {
+    fn register(&self, sched: SchedRun) {
+        self.0.lock().push(sched);
+    }
+
+    /// Run every worker's pipeline at its next empty poll.
+    pub(crate) fn wake(&self) {
+        for sched in self.0.lock().iter() {
+            sched.asap();
+        }
+    }
+}
+
+impl From<mgmt::AdmissionUpdate> for AdmissionTables {
+    fn from(update: mgmt::AdmissionUpdate) -> Self {
+        AdmissionTables {
+            arrived: Some(update.ingress),
+            flow_filter: update.flow_filter,
+            acl: update.acl,
+            accepted: Some(update.peering),
+        }
+    }
+}
+
+/// What a worker's pipeline needs from the admission publisher.
+#[derive(Clone, Copy)]
+pub(crate) struct Publication<'p> {
+    pub(crate) readers: dag::generation::ReaderFactory<'p, AdmissionTables>,
+    pub(crate) wakers: &'p Wakers,
+}
+
+/// The admission publisher's loop, on the thread that owns the workers' scope (it outlives
+/// their readers): take each applied generation's tables from management (the latest, if
+/// several arrived), and step them through begin, flip and retire, waking the workers at each
+/// step. Returns when `cancelled`.
+pub(crate) fn publish(
+    generations: &dag::generation::Generations<AdmissionTables>,
+    updates: &std::sync::mpsc::Receiver<mgmt::AdmissionUpdate>,
+    wakers: &Wakers,
+    cancelled: impl Fn() -> bool,
+) {
+    use dag::generation::Stepped;
+    use std::time::Duration;
+    let mut busy = false;
+    let mut waiting_since: Option<std::time::Instant> = None;
+    let mut warned = false;
+    while !cancelled() {
+        // Short waits while a generation is in flight, longer ones while idle.
+        let wait = if busy {
+            Duration::from_micros(200)
+        } else {
+            Duration::from_millis(20)
+        };
+        // Timed out, or management is gone: either way, keep stepping what is in flight.
+        let mut latest = updates.recv_timeout(wait).ok();
+        while let Ok(update) = updates.try_recv() {
+            latest = Some(update);
+        }
+        if let Some(update) = latest {
+            tracing::debug!("admission: generation {} offered", update.genid);
+            generations.offer(update.into());
+        }
+        match generations.step() {
+            Stepped::Idle => {
+                busy = false;
+                waiting_since = None;
+                warned = false;
+            }
+            Stepped::Waiting(why) => {
+                busy = true;
+                wakers.wake();
+                let since = *waiting_since.get_or_insert_with(std::time::Instant::now);
+                // A stuck worker is the watchdog's fault; say what is waiting, once.
+                if !warned && since.elapsed() > Duration::from_secs(1) {
+                    tracing::warn!(
+                        "admission: generation {} waiting on workers: {why:?}",
+                        generations.newest()
+                    );
+                    warned = true;
+                }
+            }
+            step @ (Stepped::Began(_) | Stepped::Flipped(_) | Stepped::Retired(_)) => {
+                tracing::debug!("admission: {step:?}");
+                busy = true;
+                waiting_since = None;
+                warned = false;
+                wakers.wake();
+            }
+        }
     }
 }
 
@@ -126,6 +244,10 @@ pub(crate) struct Admission<Pre, Mid, Src = Current> {
     acl: AclFilter,
     accepted: Option<RateLimiter<PeeringRules>>,
     source: Src,
+    /// This worker's scheduled runs: requested while the source awaits an acknowledgement.
+    sched: Option<SchedRun>,
+    /// Where to register `sched` for the publisher to wake, if a publisher owns the tables.
+    wakers: Option<Wakers>,
 }
 
 impl<Pre, Mid> Admission<Pre, Mid> {
@@ -153,14 +275,20 @@ impl<Pre, Mid> Admission<Pre, Mid> {
             acl,
             accepted,
             source,
+            sched: None,
+            wakers: None,
         }
     }
 }
 
 impl<Pre, Mid, Src> Admission<Pre, Mid, Src> {
-    /// The same slice, with its tables from `source` instead.
-    #[cfg(test)]
-    pub(crate) fn with_source<New: Source>(self, source: New) -> Admission<Pre, Mid, New> {
+    /// The same slice, with its tables from `source` instead, and `wakers` to register its
+    /// scheduled runs with, if any.
+    pub(crate) fn with_source<New: Source>(
+        self,
+        source: New,
+        wakers: Option<Wakers>,
+    ) -> Admission<Pre, Mid, New> {
         let Admission {
             arrived,
             pre,
@@ -169,6 +297,8 @@ impl<Pre, Mid, Src> Admission<Pre, Mid, Src> {
             acl,
             accepted,
             source: _,
+            sched,
+            wakers: _,
         } = self;
         Admission {
             arrived,
@@ -178,6 +308,8 @@ impl<Pre, Mid, Src> Admission<Pre, Mid, Src> {
             acl,
             accepted,
             source,
+            sched,
+            wakers,
         }
     }
 }
@@ -224,6 +356,7 @@ impl<Pre, Mid, Src: Source> Admission<Pre, Mid, Src> {
             acl,
             accepted,
             source,
+            ..
         } = self;
         let tables = source.tables();
         let seen = dag::scope_with(packets, tables, |mut burst, all, tables| {
@@ -333,19 +466,19 @@ where
     Src: Source,
 {
     fn process_burst(&mut self, burst: &mut Vec<Packet<Buf>>) {
-        if burst.len() <= MAX_BURST {
+        if burst.is_empty() {
+            // A scheduled run on an empty poll: observe, and count it towards acknowledging.
+            self.source.idle();
+        } else if burst.len() <= MAX_BURST {
             self.chunk(burst);
-            return;
+        } else {
+            self.chunks(burst);
         }
-        // Production bursts are at most MAX_BURST (MBUF_BURST); larger ones come from tests.
-        // Process them in order, chunk by chunk.
-        let mut rest = burst.split_off(MAX_BURST);
-        self.chunk(burst);
-        while !rest.is_empty() {
-            let tail = rest.split_off(rest.len().min(MAX_BURST));
-            self.chunk(&mut rest);
-            burst.append(&mut rest);
-            rest = tail;
+        // Owing an acknowledgement: run again at the next empty poll.
+        if self.source.awaiting()
+            && let Some(sched) = &self.sched
+        {
+            sched.asap();
         }
     }
 
@@ -357,8 +490,32 @@ where
     }
 
     fn set_sched_run(&mut self, sched: SchedRun) {
+        if let Some(wakers) = &self.wakers {
+            wakers.register(sched.clone());
+        }
+        self.sched = Some(sched.clone());
         self.pre.set_sched_run(sched.clone());
         self.mid.set_sched_run(sched);
+    }
+}
+
+impl<Pre, Mid, Src: Source> Admission<Pre, Mid, Src> {
+    /// Bursts larger than [`MAX_BURST`] (tests only: production bursts are at most
+    /// `MBUF_BURST`), in order, chunk by chunk.
+    fn chunks<Buf>(&mut self, burst: &mut Vec<Packet<Buf>>)
+    where
+        Buf: PacketBufferMut,
+        Pre: NetworkFunction<Buf>,
+        Mid: NetworkFunction<Buf>,
+    {
+        let mut rest = burst.split_off(MAX_BURST);
+        self.chunk(burst);
+        while !rest.is_empty() {
+            let tail = rest.split_off(rest.len().min(MAX_BURST));
+            self.chunk(&mut rest);
+            burst.append(&mut rest);
+            rest = tail;
+        }
     }
 }
 

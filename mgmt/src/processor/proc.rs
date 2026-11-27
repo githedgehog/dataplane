@@ -126,6 +126,27 @@ pub struct ConfigProcessorParams {
     /// The addresses and peers the control-plane traffic classes are built from, as of the last
     /// config applied.
     pub control_plane: tokio::sync::watch::Sender<ControlPlane>,
+
+    /// Where to send each applied generation's admission tables, when a publisher owns them
+    /// (the typed admission frame; `notes/match-action-dag/GENERATIONS.md`). `None`: the
+    /// stages read the writers above directly.
+    pub admission: Option<std::sync::mpsc::Sender<AdmissionUpdate>>,
+}
+
+/// One generation's admission tables, as applied: what the arrived meter, the flow filter, the
+/// ACL and the accepted meter read, together, so that every packet runs under one of them.
+#[derive(Debug, Clone)]
+pub struct AdmissionUpdate {
+    /// The generation applied.
+    pub genid: GenId,
+    /// The ingress policy.
+    pub ingress: Arc<rate_limit::RateLimits<IngressRules>>,
+    /// The flow filter's tables.
+    pub flow_filter: Arc<FlowFilterContext>,
+    /// The ACLs.
+    pub acl: Arc<AclFilterContext>,
+    /// The peering rate limits.
+    pub peering: Arc<rate_limit::RateLimits<PeeringRules>>,
 }
 
 impl ConfigProcessor {
@@ -796,6 +817,20 @@ impl ConfigProcessor {
 
         /* update the pipeline generation id, iff config was applied */
         self.proc_params.pipeline_data.set_genid(genid);
+
+        /* hand the admission tables to their publisher, as one generation */
+        if let Some(admission) = &self.proc_params.admission {
+            let update = AdmissionUpdate {
+                genid,
+                ingress: self.proc_params.ingress.reader().load(),
+                flow_filter: self.proc_params.flow_filter_writer.get_reader().load(),
+                acl: self.proc_params.aclfilterw.get_reader().load(),
+                peering: self.proc_params.rate_limits.reader().load(),
+            };
+            if admission.send(update).is_err() {
+                warn!("The admission publisher is gone; generation {genid} is not published to it");
+            }
+        }
 
         info!("Successfully applied config for genid {genid}");
         let _ = router_ctl.send_config(config).await;

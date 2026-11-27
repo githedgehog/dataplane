@@ -2,7 +2,7 @@
 // Copyright Open Network Fabric Authors
 
 use flow_entry::flow_table::{TimerRegistry, WorkerFlowTable};
-mod admission;
+pub(crate) mod admission;
 mod egress;
 #[cfg(test)]
 mod fuzz;
@@ -157,8 +157,24 @@ impl PipelineIngredients {
         }
     }
 
-    /// The OVERLAY pipeline to process VPC traffic
-    fn overlay_pipeline<'nf, Buf>(&self, flows: &WorkerFlowTable) -> DynPipeline<'nf, Buf>
+    /// The admission tables as the stages' readers have them now: the first generation of an
+    /// admission publisher.
+    pub(crate) fn admission_tables(&self) -> admission::AdmissionTables {
+        admission::AdmissionTables {
+            arrived: Some(self.ingress.load()),
+            flow_filter: self.flow_filter_reader_factory.handle().load(),
+            acl: self.aclfiltertablesr_factory.handle().load(),
+            accepted: Some(self.rate_limits.load()),
+        }
+    }
+
+    /// The OVERLAY pipeline to process VPC traffic. With a `publication`, the admission frame
+    /// reads its tables from the publisher's generations; without, from its stages' readers.
+    fn overlay_pipeline<'nf, Buf>(
+        &self,
+        flows: &WorkerFlowTable,
+        publication: Option<admission::Publication<'nf>>,
+    ) -> DynPipeline<'nf, Buf>
     where
         Buf: Rebuffer + DeepCopy + 'nf,
     {
@@ -217,14 +233,24 @@ impl PipelineIngredients {
                     .chain(acl_filter)
                     .chain(egress_rate_limit),
             ),
-            admission::Frame::Admission => pipeline.add_stage(admission::Admission::new(
-                Some(ingress_rate_limit),
-                icmp_error_handler.chain(flow_lookup),
-                flow_filter,
-                cookie_checker,
-                acl_filter,
-                Some(egress_rate_limit),
-            )),
+            admission::Frame::Admission => {
+                let composite = admission::Admission::new(
+                    Some(ingress_rate_limit),
+                    icmp_error_handler.chain(flow_lookup),
+                    flow_filter,
+                    cookie_checker,
+                    acl_filter,
+                    Some(egress_rate_limit),
+                );
+                match publication {
+                    // This runs on the worker's thread: its reader is its own.
+                    Some(publication) => pipeline.add_stage(composite.with_source(
+                        publication.readers.reader(),
+                        Some(publication.wakers.clone()),
+                    )),
+                    None => pipeline.add_stage(composite),
+                }
+            }
         };
         pipeline
             // After the ACLs and rate limits, so as not to answer SYNs that the gateway drops;
@@ -241,6 +267,7 @@ impl PipelineIngredients {
         &self,
         context: WorkerContext<P>,
         flows: &WorkerFlowTable,
+        publication: Option<admission::Publication<'nf>>,
     ) -> DynPipeline<'nf, Buf>
     where
         Buf: Rebuffer + DeepCopy + 'nf,
@@ -268,7 +295,7 @@ impl PipelineIngredients {
             CaptureStage::new(Direction::Egress, self.capture.sink(Direction::Egress));
 
         // Build OVERLAY pipeline, handing off the worker flow table
-        let overlay = self.overlay_pipeline(flows);
+        let overlay = self.overlay_pipeline(flows, publication);
 
         // Build the MAIN pipeline for a router
         DynPipeline::new()
@@ -293,12 +320,24 @@ impl PipelineIngredients {
         Buf: Rebuffer + DeepCopy + 'nf,
         P: BufferPool<Buf = Buf> + 'nf,
     {
+        self.factory_with(None)
+    }
+
+    /// [`Self::factory`], with the admission frame reading its tables from `publication`.
+    pub(crate) fn factory_with<'nf, Buf, P>(
+        self,
+        publication: Option<admission::Publication<'nf>>,
+    ) -> PipelineFactory<'nf, Buf, P>
+    where
+        Buf: Rebuffer + DeepCopy + 'nf,
+        P: BufferPool<Buf = Buf> + 'nf,
+    {
         Arc::new(move |context: WorkerContext<P>| {
             // This worker's handle on the shared flow table, for the stages that create flows (overlay)
             let flows = WorkerFlowTable::registered(self.flow_table.clone(), &self.timers);
 
             // Build the main pipeline, with a nested overlay pipeline
-            let pipeline = self.main_pipeline(context, &flows);
+            let pipeline = self.main_pipeline(context, &flows, publication);
 
             WorkerPipeline { pipeline, flows }
         })

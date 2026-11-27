@@ -592,6 +592,7 @@ pub mod test {
             bmp_options: None,
             gateway_name,
             control_plane,
+            admission: None,
         };
 
         let rth = tokio::runtime::Handle::current();

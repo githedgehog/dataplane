@@ -554,6 +554,9 @@ struct DatapathHandoff {
     go: std::sync::mpsc::Receiver<()>,
     /// Disconnected once management has stopped and no longer uses EAL memory.
     release: std::sync::mpsc::Receiver<()>,
+    /// Each applied generation's admission tables, for the admission publisher (the typed
+    /// admission frame only).
+    admission: Option<std::sync::mpsc::Receiver<mgmt::AdmissionUpdate>>,
 }
 
 /// Run the packet path on a thread in the datapath namespace.
@@ -601,6 +604,7 @@ fn run_datapath(
                 status_writer,
                 bridge,
                 control_plane,
+                handoff.admission.as_ref(),
             ),
             None => run_kernel_driver(config, workers, ingredients, status_writer, bridge),
         }
@@ -648,7 +652,26 @@ fn run_dpdk_driver(
     status_writer: DriverStatusWriter,
     mut bridge: Option<DatapathEnds>,
     control_plane: watch::Receiver<ControlPlane>,
+    admission: Option<&std::sync::mpsc::Receiver<mgmt::AdmissionUpdate>>,
 ) {
+    use crate::packet_processor::admission::{self as frame, Publication, Wakers};
+    // The admission publisher, if management hands it generations: owned by this thread, which
+    // owns the workers' scope below, so every worker's reader borrows it and none outlives it.
+    // Nothing is stamped yet (no NIC trap), so workers acknowledge in software mode, an idle
+    // one after a grace of empty polls.
+    let generations = admission.map(|_| {
+        dag::generation::Generations::new(ingredients.admission_tables()).with_policy(
+            dag::generation::Policy {
+                software: true,
+                idle_grace: 64,
+            },
+        )
+    });
+    let wakers = Wakers::default();
+    let publication = generations.as_ref().map(|g| Publication {
+        readers: g.factory(),
+        wakers: &wakers,
+    });
     // Probe the ports passed in the config
     let probed = match probe_ports(eal, config) {
         Ok(ports) => ports,
@@ -698,7 +721,7 @@ fn run_dpdk_driver(
             &ports,
             config.driver.num_workers(),
             config.driver.idle(),
-            &ingredients.factory(),
+            &ingredients.factory_with(publication),
             eal,
             status_writer,
             bridge.as_mut(),
@@ -710,6 +733,11 @@ fn run_dpdk_driver(
                 // shutdown. The ports have claimed their taps once `start` returns.
                 if let Some(bridge) = &bridge {
                     bridge.report_unclaimed();
+                }
+                // This thread publishes the admission generations until the workers stop.
+                if let (Some(generations), Some(updates)) = (&generations, admission) {
+                    info!("Publishing admission generations");
+                    frame::publish(generations, updates, &wakers, || workers.is_cancelled());
                 }
             }
             Err(e) => {
@@ -1010,10 +1038,21 @@ pub fn main() {
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let (go_tx, go_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        // With the typed admission frame, management hands each applied generation's admission
+        // tables to a publisher on the datapath thread.
+        let (admission_tx, admission_rx) =
+            match crate::packet_processor::admission::Frame::from_env() {
+                crate::packet_processor::admission::Frame::Admission => {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    (Some(tx), Some(rx))
+                }
+                _ => (None, None),
+            };
         let handoff = DatapathHandoff {
             ready: ready_tx,
             go: go_rx,
             release: release_rx,
+            admission: admission_rx,
         };
 
         let spawned = thread::Builder::new()
@@ -1086,6 +1125,7 @@ pub fn main() {
                     bmp_options: bmp_client_opts,
                     gateway_name,
                     control_plane,
+                    admission: admission_tx,
                 },
             },
         );

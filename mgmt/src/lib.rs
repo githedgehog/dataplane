@@ -8,7 +8,7 @@ mod tests;
 pub mod vpc_manager;
 
 pub use processor::launch::{LaunchError, MgmtParams, run_mgmt};
-pub use processor::proc::ConfigProcessorParams;
+pub use processor::proc::{AdmissionUpdate, ConfigProcessorParams};
 
 use tracectl::trace_target;
 trace_target!("mgmt", LevelFilter::DEBUG, &["management"]);

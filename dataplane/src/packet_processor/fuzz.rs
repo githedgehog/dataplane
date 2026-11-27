@@ -373,21 +373,55 @@ impl Blueprint {
     }
 
     pub(crate) fn worker(&self) -> Worker<'static> {
-        self.worker_from(None::<super::admission::Current>)
+        self.worker_from(None::<(super::admission::Current, _)>)
     }
 
     /// A worker whose admission frame reads its tables from `source` (a generation reader), not
     /// from its NFs' readers. Only the admission frame reads a source.
     pub(crate) fn worker_with<'p>(&self, source: impl Source + 'p) -> Worker<'p> {
+        self.worker_waking(source, None)
+    }
+
+    /// [`Self::worker_with`], its admission frame registering its scheduled runs with `wakers`.
+    pub(crate) fn worker_waking<'p>(
+        &self,
+        source: impl Source + 'p,
+        wakers: Option<super::admission::Wakers>,
+    ) -> Worker<'p> {
         assert_eq!(
             self.frame,
             Frame::Admission,
             "only admission reads a source"
         );
-        self.worker_from(Some(source))
+        self.worker_from(Some((source, wakers)))
     }
 
-    fn worker_from<'p, Src: Source + 'p>(&self, source: Option<Src>) -> Worker<'p> {
+    /// The typed admission frame, reading from `source` if given, else from its stages'
+    /// readers.
+    fn add_admission<'p, Src: Source + 'p>(
+        &self,
+        pipeline: DynPipeline<'p, TestBuffer>,
+        source: Option<(Src, Option<super::admission::Wakers>)>,
+    ) -> DynPipeline<'p, TestBuffer> {
+        let admission = Admission::new(
+            Some(RateLimiter::new(self.arrived.clone())),
+            IcmpErrorHandler::new(self.flow_table.clone())
+                .chain(FlowLookup::new("flow-lookup", self.flow_table.clone())),
+            FlowFilter::new("flow-filter", self.flow_filter.handle()),
+            Passthrough,
+            AclFilter::new("acl-filter", self.acl.handle()),
+            Some(RateLimiter::new(self.accepted.clone())),
+        );
+        match source {
+            Some((source, wakers)) => pipeline.add_stage(admission.with_source(source, wakers)),
+            None => pipeline.add_stage(admission),
+        }
+    }
+
+    fn worker_from<'p, Src: Source + 'p>(
+        &self,
+        source: Option<(Src, Option<super::admission::Wakers>)>,
+    ) -> Worker<'p> {
         let translations = Arc::new(Mutex::new(Translations::declaring(&self.declared)));
         let mut pipeline = DynPipeline::new().with_data(self.pipeline.clone());
 
@@ -414,19 +448,7 @@ impl Blueprint {
                 pipeline = pipeline.add_stage(RateLimiter::new(self.accepted.clone()));
             }
             Frame::Admission => {
-                let admission = Admission::new(
-                    Some(RateLimiter::new(self.arrived.clone())),
-                    IcmpErrorHandler::new(self.flow_table.clone())
-                        .chain(FlowLookup::new("flow-lookup", self.flow_table.clone())),
-                    FlowFilter::new("flow-filter", self.flow_filter.handle()),
-                    Passthrough,
-                    AclFilter::new("acl-filter", self.acl.handle()),
-                    Some(RateLimiter::new(self.accepted.clone())),
-                );
-                pipeline = match source {
-                    Some(source) => pipeline.add_stage(admission.with_source(source)),
-                    None => pipeline.add_stage(admission),
-                };
+                pipeline = self.add_admission(pipeline, source);
                 // The flow filter's checkpoint cannot sit inside the composite; its contract
                 // still holds after the ACL and the accepted meter.
                 pipeline = pipeline.add_stage(Checkpoint::new("after admission", contract::placed));
@@ -499,6 +521,11 @@ impl Blueprint {
 }
 
 impl Worker<'_> {
+    /// Whether a stage asked for a run without packets (as a driver's empty poll would make).
+    pub(crate) fn must_run(&self) -> bool {
+        self.pipeline.must_run()
+    }
+
     pub(crate) fn send(&mut self, packet: Packet<TestBuffer>) -> Packet<TestBuffer> {
         let mut out = self.send_batch(vec![packet]);
         assert_eq!(out.len(), 1, "the pipeline did not return the packet");
@@ -8256,6 +8283,101 @@ mod admission_frame {
         );
         SAMPLE.assert_covered(forwarded > 0, "no packet was ever forwarded");
         SAMPLE.assert_covered(differed > 0, "no reconfiguration ever changed a verdict");
+    }
+
+    /// Management's updates, through the real publisher loop, reach workers that receive no
+    /// packets at all: the publisher wakes them, their scheduled empty runs observe each
+    /// generation and acknowledge it after the grace window, and every generation retires.
+    #[test]
+    fn the_publisher_moves_idle_workers_through_generations() {
+        use super::super::admission::{AdmissionTables, Wakers, publish};
+        use dag::generation::{Generations, Policy};
+        use std::sync::atomic::AtomicBool;
+
+        let _eal = dpdk::test_support::start_eal();
+        let overlays: Vec<ValidatedOverlay> = [super::routed::exposes(), Vec::new()]
+            .into_iter()
+            .filter_map(|exposes| {
+                overlay_with_exposes_and_acl(exposes, None)
+                    .ok()
+                    .and_then(|o| o.validate().ok())
+            })
+            .collect();
+        assert!(!overlays.is_empty());
+        let fleet = Fleet::lowering_framed(
+            &overlays[0],
+            None,
+            Arc::new(FlowTable::default()),
+            Frame::Admission,
+        );
+        let generations: Generations<AdmissionTables> =
+            Generations::new(admission_tables(&overlays[0])).with_policy(Policy {
+                software: true,
+                idle_grace: 4,
+            });
+        let wakers = Wakers::default();
+        let (updates, feed) = std::sync::mpsc::channel();
+        let stop = AtomicBool::new(false);
+        let factory = generations.factory();
+        let blueprint = fleet.blueprint();
+        let started = std::time::Instant::now();
+        std::thread::scope(|s| {
+            for _ in 0..2 {
+                let (wakers, stop) = (wakers.clone(), &stop);
+                s.spawn(move || {
+                    let mut worker = blueprint.worker_waking(factory.reader(), Some(wakers));
+                    while !stop.load(Ordering::Relaxed) {
+                        if worker.must_run() {
+                            let _ = worker.send_batch(Vec::new());
+                        } else {
+                            std::thread::yield_now();
+                        }
+                    }
+                });
+            }
+            // Management, sending an update every few milliseconds.
+            let sent = AtomicBool::new(false);
+            std::thread::scope(|inner| {
+                let (sent, overlays) = (&sent, &overlays);
+                inner.spawn(move || {
+                    for (n, overlay) in overlays.iter().cycle().take(6).enumerate() {
+                        let tables = admission_tables(overlay);
+                        updates
+                            .send(mgmt::AdmissionUpdate {
+                                genid: i64::try_from(n).unwrap_or(0) + 2,
+                                ingress: tables
+                                    .arrived
+                                    .unwrap_or_else(|| Arc::new(RateLimits::empty())),
+                                flow_filter: tables.flow_filter,
+                                acl: tables.acl,
+                                peering: tables
+                                    .accepted
+                                    .unwrap_or_else(|| Arc::new(RateLimits::empty())),
+                            })
+                            .expect("the publisher's end");
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                    }
+                    sent.store(true, Ordering::Relaxed);
+                });
+                publish(&generations, &feed, &wakers, || {
+                    let settled = sent.load(Ordering::Relaxed)
+                        && !generations.draining()
+                        && !generations.pending();
+                    settled || started.elapsed() > std::time::Duration::from_secs(30)
+                });
+            });
+            stop.store(true, Ordering::Relaxed);
+        });
+        assert!(
+            generations.newest() >= 3,
+            "fewer than two generations were published"
+        );
+        assert!(!generations.draining(), "idle workers held a generation up");
+        eprintln!(
+            "generations published: {} (of 6 updates; some may coalesce) in {:?}",
+            generations.newest() - 1,
+            started.elapsed()
+        );
     }
 
     /// A reply to a forwarded UDP or TCP packet, as the remote VPC would send it.
