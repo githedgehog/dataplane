@@ -245,6 +245,18 @@ pub fn probes<A>(table: &Table<A>, rng: &mut Lcg, count: usize) -> Vec<Vec<u128>
 /// before [`FIELDS`]): tenant `i` is `specs[i]`, from VNI `100 + i` to VNI `200 + i`.
 #[must_use]
 pub fn tenants(specs: &[(Family, usize)], seed: u64) -> Table<Verdict> {
+    let indexed: Vec<(usize, Family, usize)> = specs
+        .iter()
+        .enumerate()
+        .map(|(i, &(family, n))| (i, family, n))
+        .collect();
+    tenants_at(&indexed, seed)
+}
+
+/// [`tenants`], each tenant at its own index `(i, family, rules)`: from VNI `100 + i` to VNI
+/// `200 + i`, seeded by `i`. Removing a tenant doesn't renumber the others.
+#[must_use]
+pub fn tenants_at(specs: &[(usize, Family, usize)], seed: u64) -> Table<Verdict> {
     let vni = Field {
         name: "vni",
         width: 24,
@@ -261,7 +273,7 @@ pub fn tenants(specs: &[(Family, usize)], seed: u64) -> Table<Verdict> {
     ];
     fields.extend(FIELDS);
     let mut rules = Vec::new();
-    for (n_th, &(family, n)) in specs.iter().enumerate() {
+    for &(n_th, family, n) in specs {
         let i = n_th as u128;
         for rule in acl(family, n, seed + n_th as u64).rules {
             let mut matches = vec![Set::exact(100 + i), Set::exact(200 + i)];

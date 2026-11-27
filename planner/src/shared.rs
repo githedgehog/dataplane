@@ -45,6 +45,7 @@ enum StageData {
 }
 
 /// The layout every tenant follows.
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Layout {
     /// The stages, in order: `Some((f, g))` fused, `None` for field `f` alone; with its field.
     stages: Vec<(usize, Option<usize>)>,
@@ -307,35 +308,160 @@ pub fn generations<A: Clone + Eq + Hash, B: Backend>(
     backend: &B,
     options: &Options,
 ) -> Result<Versioned<A>, Refusal> {
-    if old.fields != new.fields {
-        return Err(Refusal::Malformed(
-            "two generations of different keys".to_string(),
-        ));
-    }
     let po = partition(old, guard)?;
     let pn = partition(new, guard)?;
-    let rest = po.rest.clone();
-    let tenant_reg = Reg::try_from(rest.len()).unwrap_or(Reg::MAX);
     // Ids: the old generation's tenants, then the new generation's new or changed ones.
-    let mut subs: Vec<&Table<A>> = po.tenants.iter().map(|(_, t)| t).collect();
+    let mut subs: Vec<Option<&Table<A>>> = po.tenants.iter().map(|(_, t)| Some(t)).collect();
     let old_ids: Vec<usize> = (0..subs.len()).collect();
     let mut new_ids = Vec::with_capacity(pn.tenants.len());
     for (key, sub) in &pn.tenants {
         if let Some(i) = po.tenants.iter().position(|(k, t)| k == key && t == sub) {
             new_ids.push(i);
         } else {
-            subs.push(sub);
+            subs.push(Some(sub));
             new_ids.push(subs.len() - 1);
         }
     }
-    let fresh = subs.len() - po.tenants.len();
-    let mut planners: Vec<Planner<'_, A>> = subs.iter().map(|t| Planner::new(t, options)).collect();
-    let sub_fields = subs.first().map_or_else(Vec::new, |t| t.fields.clone());
-    let layout = layout(&mut planners, &sub_fields, options);
+    let banks = Banks {
+        old,
+        new,
+        guard,
+        po: &po,
+        pn: &pn,
+        old_ids: &old_ids,
+        new_ids: &new_ids,
+        subs: &subs,
+    };
+    let (versioned, _, _) = two_banks(&banks, backend, options, None)?;
+    Ok(versioned)
+}
+
+/// Two generations, split by tenant, and the ids their tenants have: what [`two_banks`] plans.
+struct Banks<'a, A> {
+    old: &'a Table<A>,
+    new: &'a Table<A>,
+    guard: &'a [usize],
+    po: &'a crate::guard::Partition<A>,
+    pn: &'a crate::guard::Partition<A>,
+    /// The id of each of `po`'s tenants, and of each of `pn`'s.
+    old_ids: &'a [usize],
+    new_ids: &'a [usize],
+    /// Each id's tenant table; `None` for an id no tenant of either generation has.
+    subs: &'a [Option<&'a Table<A>>],
+}
+
+/// Plan two generations in one shared plan, with the given tenant ids: in `previous`'s layout if
+/// every tenant fits it, else in a new one over all of them. Returns the plan, its layout, and
+/// whether the layout changed (then every tenant's entries do).
+fn two_banks<A: Clone + Eq + Hash, B: Backend>(
+    banks: &Banks<'_, A>,
+    backend: &B,
+    options: &Options,
+    previous: Option<&Layout>,
+) -> Result<(Versioned<A>, Layout, bool), Refusal> {
+    let Banks {
+        old,
+        new,
+        guard,
+        po,
+        pn,
+        old_ids,
+        new_ids,
+        subs,
+    } = *banks;
+    if old.fields != new.fields || old.default != new.default {
+        // The shared chains' last miss is the default: both generations must agree on it.
+        return Err(Refusal::Malformed(
+            "two generations of different keys or defaults".to_string(),
+        ));
+    }
+    let rest = po.rest.clone();
+    let tenant_reg = Reg::try_from(rest.len()).unwrap_or(Reg::MAX);
+    let sub_fields: Vec<crate::rules::Field> = rest.iter().map(|&f| old.fields[f]).collect();
+    let mut planners: Vec<Option<Planner<'_, A>>> = subs
+        .iter()
+        .map(|t| t.map(|t| Planner::new(t, options)))
+        .collect();
+    let keep = previous.filter(|l| {
+        planners
+            .iter_mut()
+            .flatten()
+            .all(|p| fits(l, p, &sub_fields, options))
+    });
+    let (layout, relayout) = if let Some(l) = keep {
+        (l.clone(), false)
+    } else {
+        let mut live: Vec<Planner<'_, A>> = subs
+            .iter()
+            .flatten()
+            .map(|t| Planner::new(t, options))
+            .collect();
+        (layout(&mut live, &sub_fields, options), previous.is_some())
+    };
     let mut plans: Vec<TenantPlan<A>> = planners
         .iter_mut()
-        .map(|p| tenant_plan(p, &layout, options))
+        .map(|p| match p {
+            Some(p) => tenant_plan(p, &layout, options),
+            None => TenantPlan {
+                stages: Vec::new(),
+                groups: Vec::new(),
+                finish: Finish::Software(Fallback::Unplanned(Refusal::Malformed(
+                    "an id no tenant has".to_string(),
+                ))),
+            },
+        })
         .collect();
+    let fresh = new_ids.iter().filter(|id| !old_ids.contains(id)).count();
+    let (fields, mut levels) = bank_levels(old, new, guard);
+    // Every chain comes after the selector and a guard.
+    let (chains, starts) = chains(
+        old,
+        &rest,
+        &layout,
+        &mut plans,
+        &mut levels,
+        &backend.reserving(2),
+        tenant_reg,
+    );
+    let old_tenants = fill_guard(
+        &mut levels[1],
+        &po.tenants,
+        old_ids,
+        &plans,
+        &starts,
+        &chains,
+        tenant_reg,
+    );
+    let new_tenants = fill_guard(
+        &mut levels[2],
+        &pn.tenants,
+        new_ids,
+        &plans,
+        &starts,
+        &chains,
+        tenant_reg,
+    );
+    let versioned = Versioned {
+        plan: Plan {
+            fields,
+            levels,
+            entry: Step::goto(0),
+            registers: vec![24; rest.len() + 1],
+        },
+        tenants: [old_tenants, new_tenants],
+        fresh,
+        chains,
+    };
+    Ok((versioned, layout, relayout))
+}
+
+/// The fields of a two-bank plan (the table's, and the bank), and its first levels: the
+/// selector on the bank, then a guard per generation.
+fn bank_levels<A: Clone + Eq + Hash>(
+    old: &Table<A>,
+    new: &Table<A>,
+    guard: &[usize],
+) -> (Vec<crate::rules::Field>, Vec<Level<Placed<A>>>) {
     let mut fields = old.fields.clone();
     let bank = fields.len();
     fields.push(crate::rules::Field {
@@ -348,7 +474,7 @@ pub fn generations<A: Clone + Eq + Hash, B: Backend>(
     }];
     let mut entries = Entries::for_key(&selector_key, &fields);
     entries.insert(&[0], Step::goto(1));
-    let mut levels = vec![
+    let levels = vec![
         Level {
             name: "selector".to_string(),
             key: selector_key,
@@ -364,45 +490,142 @@ pub fn generations<A: Clone + Eq + Hash, B: Backend>(
             ..guard_level(new, guard)
         },
     ];
-    // Every chain comes after the selector and a guard.
-    let (chains, starts) = chains(
-        old,
-        &rest,
-        &layout,
-        &mut plans,
-        &mut levels,
-        &backend.reserving(2),
-        tenant_reg,
-    );
-    let old_tenants = fill_guard(
-        &mut levels[1],
-        &po.tenants,
-        &old_ids,
-        &plans,
-        &starts,
-        &chains,
-        tenant_reg,
-    );
-    let new_tenants = fill_guard(
-        &mut levels[2],
-        &pn.tenants,
-        &new_ids,
-        &plans,
-        &starts,
-        &chains,
-        tenant_reg,
-    );
-    Ok(Versioned {
-        plan: Plan {
-            fields,
-            levels,
-            entry: Step::goto(0),
-            registers: vec![24; rest.len() + 1],
-        },
-        tenants: [old_tenants, new_tenants],
-        fresh,
-        chains,
+    (fields, levels)
+}
+
+/// Whether `planner`'s tenant fits `layout`: every wide field's pieces at most as long as the
+/// layout's longest prefix-length target (a piece goes to the shortest target at least its
+/// length; with none, the layout would need a new one).
+fn fits<A: Clone + Eq + Hash>(
+    layout: &Layout,
+    planner: &mut Planner<'_, A>,
+    fields: &[crate::rules::Field],
+    options: &Options,
+) -> bool {
+    layout.targets.iter().all(|(&f, targets)| {
+        let longest = targets.iter().copied().max().unwrap_or(0);
+        let (_, intervals) = planner.elementary(f);
+        let default = planner.field_default(f, &intervals);
+        let _ = options;
+        intervals
+            .iter()
+            .filter(|(_, id)| *id != default)
+            .flat_map(|(iv, _)| pieces(iv.lo, iv.hi, fields[f].width))
+            .all(|(_, len)| len <= longest)
     })
+}
+
+/// Each tenant's guard values (`None`: packets of no listed tenant) and its id.
+pub type TenantIds = Vec<(Option<Vec<u128>>, usize)>;
+
+/// Planner state carried from generation to generation: tenant ids that stay put, so an
+/// unchanged tenant keeps the same entries, and the layout, kept while every tenant fits it.
+pub struct State<A> {
+    guard: Vec<usize>,
+    /// The live generation: its table, and each of its tenants' guard values and id.
+    current: Option<(Table<A>, TenantIds)>,
+    layout: Option<Layout>,
+}
+
+/// What [`State::next`] made.
+#[derive(Clone, Debug)]
+pub struct Next<A> {
+    /// The two banks: the live generation (0) and the next (1).
+    pub versioned: Versioned<A>,
+    /// Whether the layout changed: every tenant's entries do, then, not just the fresh ones'.
+    pub relayout: bool,
+    /// The next generation's tenants' ids.
+    pub ids: TenantIds,
+}
+
+impl<A: Clone + Eq + Hash> State<A> {
+    /// No generation yet, tenants told apart by the `guard` fields.
+    #[must_use]
+    pub fn new(guard: &[usize]) -> Self {
+        State {
+            guard: guard.to_vec(),
+            current: None,
+            layout: None,
+        }
+    }
+
+    /// Plan `next` as the next generation, in two banks with the live one (the first: in both).
+    /// An unchanged tenant keeps its id; a new or changed one takes the lowest id the live
+    /// generation doesn't use. Once returned, `next` is the live generation (the old one is
+    /// retired before the one after).
+    ///
+    /// # Errors
+    ///
+    /// If `next` can't be split by tenant, or differs from the live one in fields or default.
+    pub fn next<B: Backend>(
+        &mut self,
+        next: &Table<A>,
+        backend: &B,
+        options: &Options,
+    ) -> Result<Next<A>, Refusal> {
+        let old = self.current.as_ref().map_or(next, |(t, _)| t);
+        let po = partition(old, &self.guard)?;
+        let pn = partition(next, &self.guard)?;
+        let old_ids: Vec<usize> = match &self.current {
+            Some((_, ids)) => po
+                .tenants
+                .iter()
+                .map(|(key, _)| {
+                    ids.iter()
+                        .find(|(k, _)| k == key)
+                        .map_or_else(|| unreachable!("the live tenants have ids"), |(_, id)| *id)
+                })
+                .collect(),
+            None => (0..po.tenants.len()).collect(),
+        };
+        let mut new_ids = Vec::with_capacity(pn.tenants.len());
+        let mut used: std::collections::BTreeSet<usize> = old_ids.iter().copied().collect();
+        for (key, sub) in &pn.tenants {
+            let same = po
+                .tenants
+                .iter()
+                .zip(&old_ids)
+                .find(|((k, t), _)| k == key && t == sub)
+                .map(|(_, &id)| id);
+            let id =
+                same.unwrap_or_else(|| (0..=used.len()).find(|i| !used.contains(i)).unwrap_or(0));
+            used.insert(id);
+            new_ids.push(id);
+        }
+        let ids = used.iter().max().map_or(0, |m| m + 1);
+        let mut subs: Vec<Option<&Table<A>>> = vec![None; ids];
+        for ((_, t), &id) in po.tenants.iter().zip(&old_ids) {
+            subs[id] = Some(t);
+        }
+        for ((_, t), &id) in pn.tenants.iter().zip(&new_ids) {
+            subs[id] = Some(t);
+        }
+        let banks = Banks {
+            old,
+            new: next,
+            guard: &self.guard,
+            po: &po,
+            pn: &pn,
+            old_ids: &old_ids,
+            new_ids: &new_ids,
+            subs: &subs,
+        };
+        let (versioned, layout, relayout) =
+            two_banks(&banks, backend, options, self.layout.as_ref())?;
+        let ids: TenantIds = pn
+            .tenants
+            .iter()
+            .map(|(k, _)| k.clone())
+            .zip(new_ids)
+            .collect();
+        self.current = Some((next.clone(), ids.clone()));
+        self.layout = Some(layout);
+        Ok(Next {
+            versioned,
+            relayout,
+            ids,
+        })
+    }
 }
 
 /// The layout: the fused pair and each wide field's prefix lengths, chosen over every tenant.

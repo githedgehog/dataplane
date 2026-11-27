@@ -689,6 +689,72 @@ mod versioned {
         let _ = check(&old, &tenants(&edited, 3), &tight);
     }
 
+    /// Generation after generation through the planner's state: each step's two banks mean
+    /// their generations, unchanged tenants keep their ids, and only new or changed ones take
+    /// fresh ids (the lowest the live generation doesn't use).
+    #[test]
+    fn state_keeps_ids_across_generations() {
+        // Each step: the tenants, and how many of them are new or changed.
+        type Spec = Vec<(usize, Family, usize)>;
+        use crate::generate::tenants_at;
+        use crate::shared::State;
+        let mut state = State::new(&GUARD);
+        let mut specs: Vec<(usize, Family, usize)> = specs()
+            .into_iter()
+            .enumerate()
+            .map(|(i, (f, n))| (i, f, n))
+            .collect();
+        let mut steps: Vec<(Spec, usize)> = vec![(specs.clone(), 0)];
+        specs[3].2 = 55;
+        steps.push((specs.clone(), 1));
+        specs.push((7, Family::Exact, 25));
+        steps.push((specs.clone(), 1));
+        specs.remove(1);
+        specs[0].2 = 31;
+        steps.push((specs.clone(), 1));
+        steps.push((specs.clone(), 0));
+        let mut previous: Option<(Table<Verdict>, crate::shared::TenantIds)> = None;
+        for (n, (spec, fresh)) in steps.iter().enumerate() {
+            let table = tenants_at(spec, 3);
+            let next = state
+                .next(&table, &Software, &Options::default())
+                .expect("a plan");
+            assert!(closed(&next.versioned.plan));
+            if n > 0 {
+                assert_eq!(next.versioned.fresh, *fresh, "step {n}");
+            }
+            let old = previous.as_ref().map_or(&table, |(t, _)| t);
+            let mut rng = Lcg::new(9 + n as u64);
+            let keys = probes(old, &mut rng, 8_000)
+                .into_iter()
+                .chain(probes(&table, &mut rng, 8_000));
+            for key in keys {
+                for (bank, t) in [(0u128, old), (1, &table)] {
+                    let mut banked = key.clone();
+                    banked.push(bank);
+                    assert_eq!(
+                        next.versioned.plan.run(&banked).action,
+                        expect(t, &next.versioned.tenants[usize::from(bank == 1)], &key),
+                        "step {n}, bank {bank}, key {key:x?}"
+                    );
+                }
+            }
+            // An unchanged tenant (same guard values, same rules) keeps its id.
+            if let Some((old_table, old_ids)) = &previous {
+                let po = crate::guard::partition(old_table, &GUARD).expect("split");
+                let pn = crate::guard::partition(&table, &GUARD).expect("split");
+                for ((key, sub), (_, id)) in pn.tenants.iter().zip(&next.ids) {
+                    let before = po.tenants.iter().position(|(k, t)| k == key && t == sub);
+                    if let Some(i) = before {
+                        assert_eq!(old_ids[i].1, *id, "step {n}: tenant {key:?} moved");
+                    }
+                }
+            }
+            assert!(!next.relayout, "step {n}: the layout changed");
+            previous = Some((table, next.ids.clone()));
+        }
+    }
+
     /// What updates cost when versioned by tenant id, on the 103-tenant set at 44 Mpps. Run with
     /// `cargo test -p dataplane-planner --release versioned_sizes -- --ignored --nocapture`.
     #[test]
