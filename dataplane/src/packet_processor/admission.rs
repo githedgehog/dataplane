@@ -224,7 +224,11 @@ pub(crate) fn publish(
                 }
             }
             step @ (Stepped::Began(_) | Stepped::Flipped(_) | Stepped::Retired(_)) => {
-                tracing::debug!("admission: {step:?}");
+                if let Stepped::Retired(generation) = step {
+                    tracing::info!("admission: generation {generation} is the only one live");
+                } else {
+                    tracing::debug!("admission: {step:?}");
+                }
                 busy = true;
                 waiting_since = None;
                 warned = false;
