@@ -1,0 +1,15 @@
+[package]
+name = "dataplane-flowgen-report"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+version.workspace = true
+
+[dependencies]
+clock = { workspace = true }
+serde = { workspace = true, features = ["derive", "std"] }
+serde_json = { workspace = true, features = ["std"] }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+bolero = { workspace = true, features = ["std"] }
