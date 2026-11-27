@@ -14,15 +14,19 @@ use crate::MAX_BURST;
 use crate::burst::{Emit, Keep, scope_with};
 use crate::meta::Opaque;
 use crate::presence::Presence;
+use concurrency::thread::{self, ThreadId};
 use net::buffer::TestBuffer;
 use net::packet::test_utils::build_test_ipv4_packet;
 use net::packet::{Packet, PacketMeta};
 use std::collections::VecDeque;
 use std::sync::atomic::AtomicBool;
-use std::thread::ThreadId;
 use std::time::{Duration, Instant};
 
-/// A generation's tables: its number. Dropping one records the thread it was dropped on.
+mod fuzz;
+mod model;
+
+/// A generation's tables: its number. Dropping one records the thread it was dropped on (the
+/// model checker's notion of a thread, under one).
 #[derive(Debug)]
 struct Tag {
     generation: u64,
@@ -40,7 +44,7 @@ impl Tag {
 
 impl Drop for Tag {
     fn drop(&mut self) {
-        self.drops.lock().push(std::thread::current().id());
+        self.drops.lock().push(thread::current().id());
     }
 }
 
@@ -328,10 +332,35 @@ fn a_straggler_after_its_generation_retires_is_stale() {
     assert_eq!(seen.stale, 2);
 }
 
+/// An empty poll acknowledges at once (`Reader::idle`), where GENERATIONS.md §3 step 4 asks for a
+/// grace window. A packet the NIC stamped before the flip but delivered after that poll then
+/// arrives after its generation retired: it is stale, dropped and counted, and runs under no
+/// generation (I1 holds). This pins that behaviour; the models elsewhere make stamping and queuing
+/// one step, so they never see it.
+#[test]
+fn a_packet_in_flight_across_an_empty_poll_is_stale() {
+    let log = drops();
+    let generations = Generations::new(Tag::new(1, &log));
+    let mut reader = generations.reader();
+    generations.begin(Tag::new(2, &log)).unwrap();
+    let _ = reader.live();
+    // Stamped for generation 1, not in the ring yet.
+    let in_flight = generations.selector().stamp();
+    generations.flip().unwrap();
+    // The ring is empty.
+    let _ = reader.live();
+    reader.idle();
+    generations.retire().unwrap();
+    let mut packets = vec![packet(Some(in_flight))];
+    let live = reader.live();
+    let seen = run_checked(&mut packets, live.tables());
+    assert_eq!(seen.stale, 1);
+}
+
 #[test]
 fn snapshots_are_released_on_the_publisher_thread() {
     let log = drops();
-    let publisher = std::thread::current().id();
+    let publisher = thread::current().id();
     {
         let generations = Generations::new(Tag::new(1, &log));
         let reader = generations.reader();
@@ -391,6 +420,10 @@ impl Drop for Stop<'_> {
 /// for I1. Queues are FIFO, so no packet may be stale: the acknowledgement rule must never let a
 /// generation retire while a worker still holds its packets.
 #[test]
+#[cfg_attr(
+    miri,
+    ignore = "~150k packets: miri passes the 60 s wall-clock deadline first; the `model` tests run instead"
+)]
 fn generations_cycle_under_load_and_every_packet_runs_under_one() {
     const WORKERS: u64 = 3;
     const GENERATIONS: u64 = 300;
@@ -478,6 +511,6 @@ fn generations_cycle_under_load_and_every_packet_runs_under_one() {
     eprintln!("checked {checked} packets; {straddled} bursts straddled a flip");
     assert!(straddled > 0, "no burst ever straddled a flip");
     assert_eq!(generations.newest(), GENERATIONS);
-    let publisher = std::thread::current().id();
+    let publisher = thread::current().id();
     assert!(log.lock().iter().all(|&t| t == publisher));
 }

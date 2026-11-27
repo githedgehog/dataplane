@@ -5,6 +5,13 @@ license.workspace = true
 publish.workspace = true
 version.workspace = true
 
+[features]
+# Model-check the generation protocol: `concurrency`'s primitives become the model checker's, and
+# the `*::concurrency_model::<backend>` tests explore schedules (`just features=shuttle test`).
+loom = ["concurrency/loom"]
+shuttle = ["concurrency/shuttle"]
+shuttle_dfs = ["concurrency/shuttle_dfs", "shuttle"]
+
 [dependencies]
 concurrency = { workspace = true }
 net = { workspace = true }
