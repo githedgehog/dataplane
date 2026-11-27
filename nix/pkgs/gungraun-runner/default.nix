@@ -7,12 +7,12 @@
   ...
 }:
 rustPlatform.buildRustPackage (final: {
-  pname = "iai-callgrind-runner";
+  pname = "gungraun-runner";
   inherit version;
   src = fetchCrate {
     inherit (final) pname version;
-    hash = "sha256-wJTwaqAz8GWCJ/l9GRXYBVBkpPYrWxN4VQ7GdRFXmzM=";
+    hash = "sha256-XZHnq0t5XI/lSAdtP0UYxcaaV/YVZOmT/E7YQWX7jOU=";
   };
-  cargoHash = "sha256-4N7P23bCeeJee/Cm3sSORByh+HzflOENqYqpu629mpA=";
+  cargoHash = "sha256-nYOFsVAuLw13XObUO4mS4edlv5N/BSHRYPPS1N7y0Os=";
   doCheck = false;
 })

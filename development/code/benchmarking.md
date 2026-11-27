@@ -1,6 +1,6 @@
 # Benchmarking
 
-`routing/benches/fib_lookup.rs` (Criterion) and `fib_lookup_callgrind.rs` (iai-callgrind)
+`routing/benches/fib_lookup.rs` (Criterion) and `fib_lookup_callgrind.rs` (gungraun)
 use the same fixtures and lookup code.
 
 ```sh
@@ -8,8 +8,8 @@ just profile=release bench  # wall-clock time
 just bench-callgrind        # instructions and modelled cache traffic
 ```
 
-The dev shell provides `valgrind` and `iai-callgrind-runner`.
-The runner version must match the `iai-callgrind` crate;
+The dev shell provides `valgrind` and `gungraun-runner`.
+The runner version must match the `gungraun` crate;
 `nix/overlays/dataplane-dev.nix` reads it from the workspace `Cargo.toml`.
 
 ## Interpreting results

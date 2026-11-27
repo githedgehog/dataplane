@@ -202,7 +202,7 @@ let
       duvet
       gateway-crd
       gettext
-      iai-callgrind-runner
+      gungraun-runner
       jq
       just
       kopium
@@ -922,16 +922,17 @@ let
           JQ = "${pkgs.pkgsBuildHost.jq}/bin/jq";
         }
         (
-          if platform == "wasm32-wasip1" then
-            ''
-              $TOMLQ -r '.workspace as $ws | [$ws.members[] | select($ws.metadata.package[.].wasm != false) as $p | { ($p): $ws.dependencies[$p].package }] | add' ${src}/Cargo.toml > $out
-            ''
-          else
-            ''
-              $TOMLQ -r '.workspace.members | sort[]' ${src}/Cargo.toml | while read -r p; do
-                  $TOMLQ --arg p "$p" -r '{ ($p): .package.name }' ${src}/$p/Cargo.toml
-              done | $JQ --sort-keys --slurp 'add' > $out
-            ''
+          let
+            # For wasm, skip the members marked "wasm = false" in [workspace.metadata.package].
+            member-filter =
+              if platform == "wasm32-wasip1" then "select($ws.metadata.package[.].wasm != false)" else ".";
+          in
+          # Take each package name from the member's own Cargo.toml.
+          ''
+            $TOMLQ -r '.workspace as $ws | [$ws.members[] | ${member-filter}] | sort[]' ${src}/Cargo.toml | while read -r p; do
+                $TOMLQ --arg p "$p" -r '{ ($p): .package.name }' ${src}/$p/Cargo.toml
+            done | $JQ --sort-keys --slurp 'add' > $out
+          ''
         )
       ).overrideAttrs
         source-volatile

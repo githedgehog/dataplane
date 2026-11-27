@@ -7,7 +7,7 @@
 
 use std::hint::black_box;
 
-use iai_callgrind::{
+use gungraun::{
     Cachegrind, Dhat, LibraryBenchmarkConfig, library_benchmark, library_benchmark_group, main,
 };
 
@@ -22,8 +22,11 @@ fn enter_only(fixture: &'static Fixture) {
 
 macro_rules! shape_benches {
     ($($id:ident = ($groups:expr, $entries:expr)),* $(,)?) => {
+        // Build the fixture in "args" rather than with "setup = fixture": with gungraun 0.20.0,
+        // "setup" fails to compile ("cannot find value __setup") when the bench id comes from
+        // another macro, as $id does here. Args are evaluated outside the measured region too.
         #[library_benchmark]
-        $(#[bench::$id(args = ($groups, $entries), setup = fixture)])*
+        $(#[bench::$id(args = (fixture($groups, $entries)))])*
         fn lpm_entry_prefix(fixture: &'static Fixture) {
             lookup(fixture);
         }

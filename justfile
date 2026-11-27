@@ -335,7 +335,7 @@ bench *args: _bench-release-only (build "benches")
       echo "html report: target/criterion/report/index.html"
     fi
 
-[doc("Instructions and cache traffic, via iai-callgrind")]
+[doc("Instructions and cache traffic, via callgrind")]
 [script]
 bench-callgrind *args:
     {{ _just_debuggable_ }}
@@ -349,7 +349,7 @@ bench-compare baseline="base" *args:
     # Scope baseline detection to this suite, allowing an optional target triple.
     # Keep benchmark failures out of the save-baseline path.
     scope="*/${callgrind_package}/${callgrind_bench}/*"
-    if find target/iai -type f -path "${scope}" -name '*base@{{ baseline }}*' -print -quit 2>/dev/null | grep -q .; then
+    if find target/gungraun -type f -path "${scope}" -name '*base@{{ baseline }}*' -print -quit 2>/dev/null | grep -q .; then
       cargo bench -p "${callgrind_package}" --bench "${callgrind_bench}" -- \
         --baseline='{{ baseline }}' --output-format=json > results/bench/run.jsonl
     else
