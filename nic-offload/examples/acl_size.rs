@@ -29,7 +29,7 @@ use dpdk::socket;
 use k8s_intf::gateway_agent_crd::{GatewayAgent, GatewayAgentSpec};
 use net::vxlan::Vni;
 use planner::backend::{Backend, Mlx5};
-use planner::rfc::{self, Options};
+use planner::rfc;
 use planner::rules::Table;
 use rate_limit::{IngressRules, PeeringRules, RateLimits};
 
@@ -63,11 +63,11 @@ fn report_table(name: &str, table: &Table<AclVerdict>) {
         .filter(|r| r.action == AclVerdict::Deny)
         .count();
     let start = Instant::now();
-    let planned = rfc::plan(table, &Options::default());
+    let planned = rfc::plan_within(table, &Mlx5::at(50e6));
     let took = start.elapsed();
     let Ok((plan, _)) = planned else {
         println!(
-            "    {name:5}: {} rule(s), unplanned: {planned:?}",
+            "    {name:5}: {} rule(s), no plan: {planned:?}",
             table.rules.len()
         );
         return;

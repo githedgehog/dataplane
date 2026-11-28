@@ -102,11 +102,20 @@ pub trait Backend {
     fn reserving(&self, levels: usize) -> Self
     where
         Self: Sized;
+
+    /// How much a plan costing `cost` weighs here, to choose between plans that fit: lighter is
+    /// better. Never less than its entries (a planner may give up on a candidate once its
+    /// entries pass the best weight so far). By default, its entries.
+    fn weigh(&self, cost: &Cost) -> u128 {
+        u128::try_from(cost.entries).unwrap_or(u128::MAX)
+    }
 }
 
 /// mlx5 steering, as calibrated on the CX-8 (`spike-rfc`): about 0.75G table lookups per second
 /// per port, a ceiling of about 120 Mpps of 64 B frames, and up to 8M rules per table. Every
-/// level is an exact table (a group with one template); a miss costs what a hit does.
+/// level is a table (a group with one template, its key's masks fixed); a miss costs what a hit
+/// does, as does each table of a longest-prefix match a packet passes (re-measured on the BF-3,
+/// `hw-ratelimit-spike/FINDINGS.md` §8).
 #[derive(Clone, Debug)]
 pub struct Mlx5 {
     /// Levels a packet may traverse at the design point's packet rate.
@@ -180,6 +189,16 @@ impl Backend for Mlx5 {
             });
         }
         Ok(cost)
+    }
+
+    /// Entries, each level on the worst path weighing as a tenth more of them: a level is a
+    /// lookup every such packet pays, of a port's shared budget, while entries cost install time
+    /// (~300k a second) and table memory. So a plan may take an extra level only to save more
+    /// than about a tenth of its entries.
+    fn weigh(&self, cost: &Cost) -> u128 {
+        let entries = u128::try_from(cost.entries).unwrap_or(u128::MAX);
+        let levels = u128::try_from(cost.worst_path).unwrap_or(u128::MAX);
+        entries.saturating_mul(10 + levels) / 10
     }
 }
 

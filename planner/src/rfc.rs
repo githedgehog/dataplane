@@ -19,6 +19,7 @@
 //!
 //! Plans are checked against [`Table::first_match`]; see the tests.
 
+use crate::backend::{Backend, Cost, Unfit};
 use crate::plan::{Entries, Level, LevelId, Part, Plan, Reg, Step, Then};
 use crate::rules::{Field, Interval, Table, max_of};
 use std::collections::{BTreeMap, HashMap};
@@ -1112,4 +1113,89 @@ pub fn plan<A: Clone + Eq + Hash>(
         },
         planner.report,
     ))
+}
+
+/// The options [`plan_within`] tries, in order: today's defaults first, then fields of more than
+/// eight bits (ports too) as prefix lengths, each a level of its own (a longest-prefix match:
+/// a range becomes a few prefixes, not every value), with less or more of them expanded back
+/// together, joined or combined pairwise. Expansion trades entries for levels; a join trades a
+/// cross product's entries for fewer levels.
+#[must_use]
+pub fn candidates() -> Vec<Options> {
+    let mut candidates = vec![Options::default()];
+    for join in [false, true] {
+        for expand in [1 << 12, 0, 1 << 16, 1 << 20] {
+            candidates.push(Options {
+                narrow: 8,
+                expand,
+                join,
+                ..Options::default()
+            });
+        }
+    }
+    candidates
+}
+
+/// Why [`plan_within`] has no plan.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NoFit {
+    /// No candidate planned: the defaults' refusal.
+    Refused(Refusal),
+    /// Every plan made was unfit for the backend: the defaults' plan's reason, or the first's.
+    Unfit(Unfit),
+}
+
+/// The plan of `table` that weighs least on `backend` ([`Backend::weigh`]), then has the fewest
+/// levels on its worst path, of those [`candidates`] make that `backend` can run, and its cost.
+/// Each candidate after a fitting plan is capped at that plan's weight in entries
+/// ([`Options::max_entries`]: a weight is never less than the entries), so it gives up as soon
+/// as it can't do better.
+///
+/// # Errors
+///
+/// [`NoFit`] if no candidate makes a plan `backend` can run.
+pub fn plan_within<A: Clone + Eq + Hash, B: Backend>(
+    table: &Table<A>,
+    backend: &B,
+) -> Result<(Plan<A>, Cost), NoFit> {
+    // No rules: every candidate plans the default action alone.
+    let candidates = if table.rules.is_empty() {
+        vec![Options::default()]
+    } else {
+        candidates()
+    };
+    let mut best: Option<(Plan<A>, Cost, u128)> = None;
+    let mut why: Option<NoFit> = None;
+    for mut options in candidates {
+        if let Some((_, _, weight)) = &best {
+            let weight = usize::try_from(*weight).unwrap_or(usize::MAX);
+            options.max_entries = options.max_entries.min(weight);
+        }
+        let plan = match plan(table, &options) {
+            Ok((plan, _)) => plan,
+            Err(refusal) => {
+                why.get_or_insert(NoFit::Refused(refusal));
+                continue;
+            }
+        };
+        let cost = match backend.assess(&plan) {
+            Ok(cost) => cost,
+            Err(unfit) => {
+                // A refusal of the defaults' says less than an unfit plan: keep the unfit one.
+                if !matches!(why, Some(NoFit::Unfit(_))) {
+                    why = Some(NoFit::Unfit(unfit));
+                }
+                continue;
+            }
+        };
+        let weight = backend.weigh(&cost);
+        let better = best
+            .as_ref()
+            .is_none_or(|(_, b, w)| (weight, cost.worst_path) < (*w, b.worst_path));
+        if better {
+            best = Some((plan, cost, weight));
+        }
+    }
+    best.map(|(plan, cost, _)| (plan, cost))
+        .ok_or_else(|| why.unwrap_or(NoFit::Refused(Refusal::Entries { entries: 0 })))
 }

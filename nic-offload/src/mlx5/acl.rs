@@ -20,9 +20,9 @@
 use dpdk::flow::template::{Complete, Pattern, TemplateAction};
 use dpdk::flow::{EthMatch, Ipv4Match, Ipv4Prefix, TcpMatch, UdpMatch};
 use net::vxlan::Vni;
-use planner::backend::{Backend, Mlx5 as Budget};
+use planner::backend::Mlx5 as Budget;
 use planner::plan::{Part, Plan as Levels, Step, Then};
-use planner::rfc::{self, Options};
+use planner::rfc;
 use planner::rules::Table;
 use std::net::Ipv4Addr;
 
@@ -206,11 +206,12 @@ impl Plan {
         let mut tables = Vec::new();
         let mut entries: Vec<(AclProto, Step<AclVerdict>)> = Vec::new();
         for proto in AclProto::ALL {
-            let (levels, _) = rfc::plan(proto.table(acl), &Options::default())
-                .map_err(|e| AclUnfit::Unplanned(format!("{e:?}")))?;
-            budget
-                .assess(&levels)
-                .map_err(|e| AclUnfit::Budget(format!("{e:?}")))?;
+            // The fewest entries the budget lets through: longest-prefix levels, expansion and
+            // joining as the ACL suits (`rfc::plan_within`).
+            let (levels, _) = rfc::plan_within(proto.table(acl), &budget).map_err(|e| match e {
+                rfc::NoFit::Refused(r) => AclUnfit::Unplanned(format!("{r:?}")),
+                rfc::NoFit::Unfit(u) => AclUnfit::Budget(format!("{u:?}")),
+            })?;
             if levels.registers.len() > TAGS {
                 return Err(AclUnfit::Registers(levels.registers.len()));
             }

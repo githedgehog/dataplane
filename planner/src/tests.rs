@@ -193,20 +193,27 @@ fn random_tables_plan_exactly() {
                 Verdict::Deny
             },
         };
-        for dense in [usize::MAX, 0] {
-            let options = Options {
-                dense,
-                expand: 1 << 12,
-                fuse: true,
-                ..Options::default()
-            };
+        // The planner's own variants, then every option set `plan_within` tries.
+        let variants = [usize::MAX, 0].into_iter().map(|dense| Options {
+            dense,
+            expand: 1 << 12,
+            fuse: true,
+            ..Options::default()
+        });
+        // The candidates on the first 40 seeds: nine more plans each (each ~50 ms in debug).
+        let candidates = if seed < 40 {
+            crate::rfc::candidates()
+        } else {
+            Vec::new()
+        };
+        for (dense, options) in variants.chain(candidates).map(|o| (o.dense, o)) {
             let (plan, _) = plan(&table, &options).expect("a plan");
             let mut probe_rng = Lcg::new(seed + 1);
             for key in probes(&table, &mut probe_rng, 2_000) {
                 assert_eq!(
                     plan.run(&key).action,
                     *table.first_match(&key),
-                    "seed {seed}, dense {dense}, key {key:x?}"
+                    "seed {seed}, dense {dense}, options {options:?}, key {key:x?}"
                 );
             }
             assert!(plan.worst_path().is_some(), "seed {seed}: the plan loops");
@@ -902,5 +909,44 @@ fn entries_unpack_what_they_pack() {
             u128::from(rng.below(1 << 16)),
         ];
         assert_eq!(entries.unpack(entries.pack(&values)), values);
+    }
+}
+
+/// `plan_within` plans exactly, fits its backend, and never weighs more than the defaults' plan
+/// when that fits: on the spike's families and on ACLs with port ranges.
+#[test]
+fn plan_within_is_exact_and_no_heavier_than_the_defaults() {
+    use crate::backend::{Backend, Mlx5};
+    use crate::rfc::plan_within;
+    let backend = Mlx5::at(50e6);
+    for family in [
+        Family::Exact,
+        Family::Ranges,
+        Family::Prefixes,
+        Family::Mixed,
+    ] {
+        for (n, seed) in [(10, 1), (60, 2), (200, 3)] {
+            let table = acl(family, n, seed);
+            let Ok((within, cost)) = plan_within(&table, &backend) else {
+                continue;
+            };
+            assert_eq!(backend.assess(&within).as_ref(), Ok(&cost));
+            let mut rng = Lcg::new(seed + 7);
+            for key in probes(&table, &mut rng, 3_000) {
+                assert_eq!(
+                    within.run(&key).action,
+                    *table.first_match(&key),
+                    "{family:?} {n}: key {key:x?}"
+                );
+            }
+            if let Ok((defaults, _)) = plan(&table, &Options::default())
+                && let Ok(default_cost) = backend.assess(&defaults)
+            {
+                assert!(
+                    backend.weigh(&cost) <= backend.weigh(&default_cost),
+                    "{family:?} {n}: {cost:?} against the defaults' {default_cost:?}"
+                );
+            }
+        }
     }
 }

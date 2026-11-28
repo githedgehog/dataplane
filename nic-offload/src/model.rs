@@ -16,8 +16,11 @@ use crate::mlx5::Group;
 
 use crate::mlx5::{Arg, Plan, PlannedRule, PlannedTable, Role};
 
-/// How far jumps may chain before the model calls it a loop.
-const MAX_DEPTH: usize = 16;
+/// How far jumps may chain before the model calls it a loop. The deepest plan chains the root,
+/// selector, switch, ingress and color groups, a planned ACL's dispatch and up to its budget's
+/// levels (15 at 50 Mpps: `planner::backend::Mlx5`), the police and color groups and a trap:
+/// about 24. The NIC itself took 64 (`hw-ratelimit-spike`, `results-jumps.txt`).
+const MAX_DEPTH: usize = 32;
 
 /// Where a frame ends up.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
