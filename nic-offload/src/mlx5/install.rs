@@ -621,6 +621,7 @@ impl<'t> Port<'t> {
                 Arg::Stamp(node) => Ok(SharedArg::Mark(trap_mark(self.stamp(), node))),
                 Arg::Meta(value) => Ok(SharedArg::Meta(value)),
                 Arg::Select => Ok(SharedArg::Tag(bank_tag(self.active))),
+                Arg::Tag(value) => Ok(SharedArg::Tag(value)),
             })
             .collect()
     }
@@ -662,7 +663,9 @@ impl<'t> Port<'t> {
             | Group::IngressColor(..)
             | Group::Deny(_)
             | Group::Police(_)
-            | Group::Exit(_) => own.get(&group).copied().ok_or(Error::NoSuchGroup(group)),
+            | Group::Exit(_)
+            | Group::AclDispatch(_)
+            | Group::Acl(..) => own.get(&group).copied().ok_or(Error::NoSuchGroup(group)),
         }
     }
 
@@ -1230,7 +1233,9 @@ impl SyncCreate for Port<'_> {
                 Arg::Meta(value) => Ok(SharedArg::Meta(value)),
                 Arg::Jump(_) => Ok(SharedArg::Jump(entry)),
                 // A switch rule charges no meter, nor stamps, nor selects.
-                Arg::Meter(_) | Arg::Stamp(_) | Arg::Select => Err(Error::MeterNotMade),
+                Arg::Meter(_) | Arg::Stamp(_) | Arg::Select | Arg::Tag(_) => {
+                    Err(Error::MeterNotMade)
+                }
             })
             .collect();
         let args = match args {
@@ -1521,19 +1526,31 @@ fn role_peerings(program: &Program, refused: Role) -> Vec<Peering> {
             .collect(),
         Role::Switch(vni)
         | Role::Pass(vni)
-        | Role::CatchAll(Group::Deny(vni) | Group::Police(vni)) => program
-            .denies
-            .iter()
-            .filter(|d| d.matches.src_vni == vni)
-            .map(|d| d.peering)
-            .chain(
-                program
-                    .rules
-                    .iter()
-                    .filter(|r| r.matches.src_vni == vni)
-                    .map(|r| r.peering),
-            )
-            .collect(),
+        | Role::CatchAll(Group::Deny(vni) | Group::Police(vni) | Group::AclDispatch(vni)) => {
+            program
+                .denies
+                .iter()
+                .filter(|d| d.matches.src_vni == vni)
+                .map(|d| d.peering)
+                .chain(
+                    program
+                        .rules
+                        .iter()
+                        .filter(|r| r.matches.src_vni == vni)
+                        .map(|r| r.peering),
+                )
+                .chain(
+                    program
+                        .acls
+                        .iter()
+                        .filter(|acl| acl.src == vni)
+                        .map(|acl| acl.peering),
+                )
+                .collect()
+        }
+        // The VPC isn't attached: its planned ACL's peering, and the rest of its rules', stay in
+        // software.
+        Role::Acl(vni) => role_peerings(program, Role::Switch(vni)),
         Role::Color(meter, _) => program
             .rules
             .iter()
@@ -1555,7 +1572,8 @@ fn role_peerings(program: &Program, refused: Role) -> Vec<Peering> {
             | Group::Color(_)
             | Group::Ingress(_)
             | Group::IngressColor(..)
-            | Group::Exit(_),
+            | Group::Exit(_)
+            | Group::Acl(..),
         ) => Vec::new(),
     }
 }
@@ -1595,10 +1613,12 @@ pub(crate) fn peerings(program: &Program, refused: &[(Role, Error)]) -> Result<E
         let generation = match *role {
             Role::Switch(vni)
             | Role::Pass(vni)
+            | Role::Acl(vni)
             | Role::IngressColor(vni, ..)
             | Role::CatchAll(
                 Group::Deny(vni)
                 | Group::Police(vni)
+                | Group::AclDispatch(vni)
                 | Group::Ingress(vni)
                 | Group::IngressColor(vni, _),
             ) => Some(vni),
@@ -1814,12 +1834,16 @@ fn run_banked(
 /// Say what installing `program` (`None`: it failed) came to on `port`.
 fn installed(port_name: &str, port: &Port<'_>, program: Option<&Program>, decap: bool) {
     if let Some(program) = program
-        && (!program.denies.is_empty() || !program.rules.is_empty() || !program.ingress.is_empty())
+        && (!program.denies.is_empty()
+            || !program.rules.is_empty()
+            || !program.ingress.is_empty()
+            || !program.acls.is_empty())
     {
         info!(
-            "port {port_name}: NIC enforcing {} ingress rule(s), {} ACL deny(s) and {} rate limit(s) for {} source VPC(s)",
+            "port {port_name}: NIC enforcing {} ingress rule(s), {} ACL deny(s), {} planned ACL rule(s) and {} rate limit(s) for {} source VPC(s)",
             port.installed(|role| matches!(role, Role::Ingress(_))),
             port.installed(|role| matches!(role, Role::Deny(_))),
+            port.installed(|role| matches!(role, Role::Acl(_))),
             port.installed(|role| matches!(role, Role::Police(_))),
             port.vpcs[bank(port.active)].len(),
         );
@@ -1908,6 +1932,7 @@ fn install_policy(
             .flat_map(|d| d.peering.vnis())
             .chain(program.rules.iter().flat_map(|r| r.peering.vnis()))
             .chain(program.ingress.iter().map(|r| r.matches.src_vni))
+            .chain(program.acls.iter().flat_map(|acl| acl.peering.vnis()))
             .filter(|vni| !vteps.contains_key(vni))
             .collect();
         if !homeless.is_empty() {

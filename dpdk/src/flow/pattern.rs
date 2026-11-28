@@ -133,7 +133,8 @@ impl Ipv4Prefix {
 pub struct Ipv4Match {
     src: Option<Ipv4Prefix>,
     dst: Option<Ipv4Prefix>,
-    proto: Option<u8>,
+    /// The value, and the mask of its bits constrained.
+    proto: Option<(u8, u8)>,
     ttl: Option<u8>,
     unfragmented: bool,
 }
@@ -156,7 +157,15 @@ impl Ipv4Match {
     /// Constrain the L4 protocol (`next_proto_id`), e.g. 6 (TCP) or 17 (UDP).
     #[must_use]
     pub fn proto(mut self, proto: u8) -> Ipv4Match {
-        self.proto = Some(proto);
+        self.proto = Some((proto, u8::MAX));
+        self
+    }
+
+    /// Constrain the L4 protocol's bits under `mask` to `value`'s; see
+    /// [`UdpMatch::src_masked`].
+    #[must_use]
+    pub fn proto_masked(mut self, value: u8, mask: u8) -> Ipv4Match {
+        self.proto = Some((value & mask, mask));
         self
     }
 
@@ -189,9 +198,9 @@ impl Ipv4Match {
             spec.hdr.dst_addr = be32(dst.addr);
             mask.hdr.dst_addr = be32(dst.mask);
         }
-        if let Some(proto) = self.proto {
+        if let Some((proto, proto_mask)) = self.proto {
             spec.hdr.next_proto_id = proto;
-            mask.hdr.next_proto_id = u8::MAX;
+            mask.hdr.next_proto_id = proto_mask;
         }
         if let Some(ttl) = self.ttl {
             spec.hdr.time_to_live = ttl;
@@ -409,6 +418,8 @@ enum Ports {
     Exact(u16),
     /// From the first to the second, both included; the second is above the first.
     Range(u16, u16),
+    /// The value under the mask: the bits the mask sets must equal the value's.
+    Masked(u16, u16),
 }
 
 impl Ports {
@@ -428,6 +439,7 @@ impl Ports {
             None => (0, 0, 0),
             Some(Ports::Exact(port)) => (port.to_be(), u16::MAX, 0),
             Some(Ports::Range(lo, hi)) => (lo.to_be(), u16::MAX, hi.to_be()),
+            Some(Ports::Masked(value, mask)) => ((value & mask).to_be(), mask.to_be(), 0),
         }
     }
 }
@@ -466,6 +478,21 @@ impl UdpMatch {
     #[must_use]
     pub fn dst_range(mut self, range: PortRange) -> UdpMatch {
         self.dst = Some(Ports::range(range));
+        self
+    }
+
+    /// Constrain the source port's bits under `mask` to `value`'s: a template's rules share the
+    /// mask (shapes enforce this), each its value.
+    #[must_use]
+    pub fn src_masked(mut self, value: u16, mask: u16) -> UdpMatch {
+        self.src = Some(Ports::Masked(value, mask));
+        self
+    }
+
+    /// Constrain the destination port's bits under `mask`; see [`UdpMatch::src_masked`].
+    #[must_use]
+    pub fn dst_masked(mut self, value: u16, mask: u16) -> UdpMatch {
+        self.dst = Some(Ports::Masked(value, mask));
         self
     }
 
@@ -522,6 +549,20 @@ impl TcpMatch {
     #[must_use]
     pub fn dst_range(mut self, range: PortRange) -> TcpMatch {
         self.dst = Some(Ports::range(range));
+        self
+    }
+
+    /// Constrain the source port's bits under `mask`; see [`UdpMatch::src_masked`].
+    #[must_use]
+    pub fn src_masked(mut self, value: u16, mask: u16) -> TcpMatch {
+        self.src = Some(Ports::Masked(value, mask));
+        self
+    }
+
+    /// Constrain the destination port's bits under `mask`; see [`UdpMatch::src_masked`].
+    #[must_use]
+    pub fn dst_masked(mut self, value: u16, mask: u16) -> TcpMatch {
+        self.dst = Some(Ports::Masked(value, mask));
         self
     }
 

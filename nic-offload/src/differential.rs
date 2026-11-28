@@ -55,7 +55,7 @@ struct VpcSpec {
     len: u8,
 }
 
-const VPCS: [VpcSpec; 5] = [
+const VPCS: [VpcSpec; 6] = [
     VpcSpec {
         name: "vpc-a",
         id: "AAAAA",
@@ -77,6 +77,14 @@ const VPCS: [VpcSpec; 5] = [
         expose: IpAddr::V4(Ipv4Addr::new(10, 2, 0, 0)),
         len: 16,
     },
+    // vpc-f's only peer is vpc-c: its ACL is the rule planner's (`crate::acl`), vpc-c's is not.
+    VpcSpec {
+        name: "vpc-f",
+        id: "FFFFF",
+        vni: 600,
+        expose: IpAddr::V4(Ipv4Addr::new(10, 3, 0, 0)),
+        len: 16,
+    },
     VpcSpec {
         name: "vpc-d",
         id: "DDDDD",
@@ -94,7 +102,7 @@ const VPCS: [VpcSpec; 5] = [
 ];
 
 /// Peerings, by index into [`VPCS`].
-const PEERINGS: [(usize, usize); 4] = [(0, 1), (0, 2), (1, 2), (3, 4)];
+const PEERINGS: [(usize, usize); 5] = [(0, 1), (0, 2), (1, 2), (2, 3), (4, 5)];
 
 const PORTS: [u16; 7] = [53, 80, 443, 4789, 8080, 1, 65535];
 
@@ -328,12 +336,12 @@ fn ingress_meter(i: u8) -> String {
 /// `Some(true)`, else allow). And the gateway's ingress policy, which comes before them.
 #[derive(Debug, Clone, Default, bolero::TypeGenerator)]
 pub(crate) struct RawAcls {
-    pub(crate) defaults: [Option<bool>; 4],
+    pub(crate) defaults: [Option<bool>; 5],
     pub(crate) rules: Vec<RawAclRule>,
     /// The ingress policy's rules, at most four of them.
     pub(crate) ingress: Vec<RawIngressRule>,
     /// What each side of each peering exposes, left then right.
-    pub(crate) exposes: [[RawExpose; 2]; 4],
+    pub(crate) exposes: [[RawExpose; 2]; 5],
 }
 
 /// What a VPC exposes to a peer.
@@ -485,8 +493,8 @@ pub(crate) fn exposes(
     meters: &[RawMeter; 4],
     rules: &[RawRule],
     acls: &RawAcls,
-) -> [[RawExpose; 2]; 4] {
-    let mut exposes = [[RawExpose::Own; 2]; 4];
+) -> [[RawExpose; 2]; 5] {
+    let mut exposes = [[RawExpose::Own; 2]; 5];
     for peering in 0..exposes.len() {
         for side in 0..2 {
             let mut tried = exposes;
@@ -589,7 +597,7 @@ fn with_exposes(
     meters: &[RawMeter; 4],
     rules: &[RawRule],
     acls: &RawAcls,
-    exposes: &[[RawExpose; 2]; 4],
+    exposes: &[[RawExpose; 2]; 5],
 ) -> Option<ValidatedOverlay> {
     let mut vpcs = VpcTable::new();
     for spec in &VPCS {
@@ -720,10 +728,10 @@ impl RawFrame {
     /// The source VPC, and the inner source and destination addresses.
     fn addresses(&self, aimed: Option<&RawRule>) -> (usize, IpAddr, IpAddr) {
         let v6 = match aimed {
-            Some(rule) => rule.direction().1 >= 3,
-            None => usize::from(self.src_vpc) % VPCS.len() >= 3,
+            Some(rule) => rule.direction().1 >= 4,
+            None => usize::from(self.src_vpc) % VPCS.len() >= 4,
         };
-        let family: Vec<usize> = (0..VPCS.len()).filter(|&i| (i >= 3) == v6).collect();
+        let family: Vec<usize> = (0..VPCS.len()).filter(|&i| (i >= 4) == v6).collect();
         let src_vpc = match aimed {
             Some(rule) => rule.direction().1,
             None => family[usize::from(self.src_vpc) % family.len()],
@@ -903,6 +911,7 @@ pub(crate) fn vteps(program: &Program) -> BTreeMap<Vni, Ipv4Addr> {
         .map(|d| d.matches.src_vni)
         .chain(program.rules.iter().map(|r| r.matches.src_vni))
         .chain(program.ingress.iter().map(|r| r.matches.src_vni))
+        .chain(program.acls.iter().map(|acl| acl.src))
         .map(|vni| (vni, VTEP))
         .collect()
 }
@@ -1055,6 +1064,8 @@ struct Tally {
     cases: usize,
     /// Outcomes an ingress rule of the NIC dropped.
     ingress_dropped: usize,
+    /// Outcomes a planned ACL dropped.
+    acl_dropped: usize,
     /// Outcomes charging an ingress meter.
     ingress_charged: usize,
     /// Outcomes an ingress rule of the NIC passed to software, as it cannot enforce it.
@@ -1093,10 +1104,15 @@ fn violation(
             "the NIC's ingress rules drop what the software's do not: {ingress:?}"
         ));
     }
-    let denied = outcome
-        .path
-        .iter()
-        .any(|role| matches!(role, Role::Deny(_)));
+    // A planned ACL's drop is the rule it ends at.
+    let acl_dropped =
+        outcome.verdict == Verdict::Dropped && matches!(outcome.path.last(), Some(Role::Acl(_)));
+    tally.acl_dropped += usize::from(acl_dropped);
+    let denied = acl_dropped
+        || outcome
+            .path
+            .iter()
+            .any(|role| matches!(role, Role::Deny(_)));
     if !outcome.meters.is_empty() {
         tally.charged += 1;
     }
@@ -1311,6 +1327,7 @@ fn check_overlay(overlay: &ValidatedOverlay, targets: &[RawRule], frames: &[RawF
             );
     for peering in logged {
         assert!(program.denies.iter().all(|d| d.peering != peering));
+        assert!(program.acls.iter().all(|a| a.peering != peering));
         assert!(program.rules.iter().all(|r| r.peering != peering));
     }
     // Every meter is some rule's: one no rule charges, nothing would leave to software.
@@ -1511,6 +1528,7 @@ fn the_nic_only_ever_does_what_the_software_would() {
             total.charged += tally.charged;
             total.charged_dropped += tally.charged_dropped;
             total.ingress_dropped += tally.ingress_dropped;
+            total.acl_dropped += tally.acl_dropped;
             total.ingress_charged += tally.ingress_charged;
             total.ingress_passed += tally.ingress_passed;
             total.ingress_fragments += tally.ingress_fragments;
@@ -1520,7 +1538,7 @@ fn the_nic_only_ever_does_what_the_software_would() {
         });
     let total = total.0.into_inner();
     eprintln!(
-        "differential: {} outcome(s) charged a meter, {} of them for unclassifiable packets; {} of {} cases with other exposes than the VPCs' own prefixes; ingress rules dropped {}, charged {} and passed {} outcome(s), took {} of fragments, and chained meters in {}",
+        "differential: {} outcome(s) charged a meter, {} of them for unclassifiable packets; {} of {} cases with other exposes than the VPCs' own prefixes; ingress rules dropped {}, charged {} and passed {} outcome(s), took {} of fragments, chained meters in {}; planned ACLs dropped {}",
         total.charged,
         total.charged_dropped,
         total.exposed,
@@ -1529,7 +1547,8 @@ fn the_nic_only_ever_does_what_the_software_would() {
         total.ingress_charged,
         total.ingress_passed,
         total.ingress_fragments,
-        total.ingress_chained
+        total.ingress_chained,
+        total.acl_dropped
     );
 }
 
@@ -1567,7 +1586,7 @@ fn aimed(aim: u8, l4: RawL4, fragment: RawFragment) -> RawFrame {
 
 fn peering_rule(v6: bool, proto: RawProto) -> RawRule {
     RawRule {
-        peering: if v6 { 3 } else { 0 },
+        peering: if v6 { 4 } else { 0 },
         reverse: false,
         src: vec![],
         dst: vec![],
@@ -1634,7 +1653,7 @@ fn denies_drop_in_the_nic_unless_an_earlier_allow_overlaps() {
         let acls = RawAcls {
             exposes: Default::default(),
             ingress: Vec::new(),
-            defaults: [Some(false), None, None, None],
+            defaults: [Some(false), None, None, None, None],
             rules: acl,
         };
         let overlay = overlay(&meters(), &rules, &acls).unwrap();
@@ -1671,6 +1690,96 @@ fn denies_drop_in_the_nic_unless_an_earlier_allow_overlaps() {
     }
 }
 
+/// A deny behind an overlapping allow, which the per-rule compiler refuses, drops in the NIC when
+/// its source VPC has a single peer: the rule planner takes the ACL whole (`crate::acl`). Only
+/// that direction: vpc-c has other peers, and keeps its denies on the per-rule path.
+#[test]
+fn a_single_peer_vpc_acl_drops_first_match_denies_in_the_nic() {
+    // vpc-f, to vpc-c.
+    let rule = |dst: Vec<RawSubnet>, reverse: bool| RawRule {
+        peering: 3,
+        reverse,
+        src: vec![],
+        dst,
+        proto: RawProto::Udp,
+        meter: 0,
+    };
+    let dns = vec![RawSubnet {
+        bits: 0,
+        extra: 0,
+        ports: Some(RawPorts::Exact(0)),
+    }];
+    let acl = |rule: RawRule, deny: bool| RawAclRule {
+        rule,
+        deny,
+        flow: false,
+        log: false,
+    };
+    let acls = RawAcls {
+        exposes: Default::default(),
+        ingress: Vec::new(),
+        defaults: [None, None, None, Some(false), None],
+        rules: vec![
+            acl(rule(dns.clone(), true), false),
+            acl(rule(vec![], true), true),
+            acl(rule(dns, false), false),
+            acl(rule(vec![], false), true),
+        ],
+    };
+    let overlay = overlay(&meters(), &[], &acls).unwrap();
+    let filter = AclFilterContext::reference(&overlay).unwrap();
+    let program = Program::compile(
+        &filter,
+        &RateLimits::<PeeringRules>::empty(),
+        &RateLimits::<IngressRules>::empty(),
+        &destinations(&overlay),
+        &Exclusions::default(),
+    );
+    let f = VPCS[3].vni;
+    assert_eq!(
+        program
+            .acls
+            .iter()
+            .map(|a| a.src.as_u32())
+            .collect::<Vec<_>>(),
+        vec![f],
+        "{program:#?}"
+    );
+    // vpc-c's deny overlaps its allow: refused, as before.
+    assert!(program.denies.is_empty(), "{program:#?}");
+    let plan = Plan::new(&program, &vteps(&program), &fate(), false).unwrap();
+    let targets = targets(&[], &acls);
+    for (aim, dropped) in [(0, false), (1, true)] {
+        let frame = aimed(aim, RawL4::Udp, RawFragment::Whole).frame(&targets);
+        assert_eq!(frame.src_vni, f);
+        let outcomes = plan.outcomes(&frame.wire()).unwrap();
+        assert_ne!(outcomes, []);
+        for o in &outcomes {
+            let expected = if dropped {
+                Verdict::Dropped
+            } else {
+                Verdict::Delivered
+            };
+            assert_eq!(o.verdict, expected, "aim {aim}: {outcomes:?}");
+            assert!(
+                o.path
+                    .iter()
+                    .any(|r| *r == Role::Acl(Vni::new_checked(f).unwrap()))
+            );
+        }
+    }
+    check_overlay(
+        &overlay,
+        &targets,
+        &[
+            aimed(0, RawL4::Udp, RawFragment::Whole),
+            aimed(1, RawL4::Udp, RawFragment::Whole),
+            aimed(2, RawL4::Udp, RawFragment::Whole),
+            aimed(3, RawL4::Udp, RawFragment::Whole),
+        ],
+    );
+}
+
 /// A default deny keeps its peering in software, rate limits too; other peerings are not
 /// affected.
 #[test]
@@ -1687,7 +1796,7 @@ fn a_default_deny_keeps_its_peering_and_only_it_in_software() {
     let acls = RawAcls {
         exposes: Default::default(),
         ingress: Vec::new(),
-        defaults: [Some(true), None, None, None],
+        defaults: [Some(true), None, None, None, None],
         rules: vec![RawAclRule {
             rule: peering_rule(false, RawProto::Udp),
             deny: false,
@@ -1731,7 +1840,7 @@ fn a_syn_deny_drops_syns_in_the_nic() {
     let acls = RawAcls {
         exposes: Default::default(),
         ingress: Vec::new(),
-        defaults: [Some(false), None, None, None],
+        defaults: [Some(false), None, None, None, None],
         rules: vec![RawAclRule {
             rule: peering_rule(false, RawProto::TcpFlags(0x02, 0x12)),
             deny: true,
@@ -1792,13 +1901,13 @@ fn traffic_a_peer_takes_only_part_of_is_left_alone() {
             port: 1,
         },
     ] {
-        let mut exposes = [[RawExpose::Own; 2]; 4];
+        let mut exposes = [[RawExpose::Own; 2]; 5];
         exposes[0][0] = partly;
         exposes[2][1] = RawExpose::Default;
         let acls = RawAcls {
             exposes,
             ingress: Vec::new(),
-            defaults: [Some(false), None, None, None],
+            defaults: [Some(false), None, None, None, None],
             rules: vec![RawAclRule {
                 rule: rule.clone(),
                 deny: true,
@@ -1846,7 +1955,7 @@ fn a_pass_leaves_the_rules_of_its_own_destination_in_force() {
         ..peering_rule(false, RawProto::Any)
     };
     let to_b = peering_rule(false, RawProto::Any);
-    let mut exposes = [[RawExpose::Own; 2]; 4];
+    let mut exposes = [[RawExpose::Own; 2]; 5];
     exposes[1][1] = RawExpose::Default;
     for b_denies in [true, false] {
         // A rate limit to C; to B a deny, or a rate limit of its own (with a deny elsewhere,
@@ -1871,7 +1980,7 @@ fn a_pass_leaves_the_rules_of_its_own_destination_in_force() {
         let acls = RawAcls {
             exposes,
             ingress: Vec::new(),
-            defaults: [Some(false), Some(false), None, None],
+            defaults: [Some(false), Some(false), None, None, None],
             rules: acls
                 .into_iter()
                 .map(|rule| RawAclRule {

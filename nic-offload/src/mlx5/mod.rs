@@ -56,6 +56,7 @@ use net::packet::Bank;
 use net::vxlan::Vni;
 use rate_limit::{Billing, Unit};
 
+use crate::acl::PlannedAcl;
 use crate::program::{Exclusions, IngressVerdict, Match, Origin, Peering, Prefix, Program, Scope};
 
 /// What a port reserves for this backend when it is configured; fixed until the port restarts.
@@ -603,7 +604,10 @@ pub(crate) fn profile(meter: &crate::program::PoliceMeter) -> Option<MeterProfil
     })
 }
 
+mod acl;
 mod install;
+
+pub use acl::{AclProto, AclUnfit};
 
 #[cfg(test)]
 pub(crate) use install::peerings;
@@ -622,6 +626,10 @@ pub enum Group {
     IngressColor(Vni, usize),
     /// A source VPC's ACL denies.
     Deny(Vni),
+    /// A source VPC's planned ACL: dispatch by protocol to its plans ([`crate::acl`]).
+    AclDispatch(Vni),
+    /// A level of a source VPC's planned ACL's plan of a protocol.
+    Acl(Vni, AclProto, u16),
     /// A source VPC's rate limits.
     Police(Vni),
     /// A meter's colors, by index into [`Plan::meters`].
@@ -659,6 +667,8 @@ pub enum Role {
     IngressColor(Vni, usize, Color),
     /// An ACL deny of the program, by index into [`Program::denies`].
     Deny(usize),
+    /// A rule of a source VPC's planned ACL.
+    Acl(Vni),
     /// A rate limit of the program, by index into [`Program::rules`].
     Police(usize),
     /// A destination of another peer a source VPC's rules of less specific destinations must let
@@ -692,6 +702,8 @@ pub enum Arg {
     Stamp(Option<std::num::NonZero<u8>>),
     /// Set META to this value.
     Meta(u32),
+    /// Write this value to the TAG register of the rule's `TagPerRule`: a planner register's.
+    Tag(u32),
     /// Write the bank hardware classifies under now into [`BANK_TAG`]: the selector rule's,
     /// resolved when it is installed (and rewritten in place at each flip).
     Select,
@@ -778,6 +790,8 @@ pub struct VpcSpec {
     pub vtep: Ipv4Addr,
     /// The peerings its rules are of: those the NIC enforces while it is attached.
     pub peerings: BTreeSet<Peering>,
+    /// Its planned ACL, if the NIC enforces one.
+    pub acl: Option<PlannedAcl>,
 }
 
 /// A source VPC's generation of rules.
@@ -1036,6 +1050,7 @@ fn exit(vni: Vni, vtep: Ipv4Addr) -> PlannedVpc {
             passes: Vec::new(),
             vtep,
             peerings: BTreeSet::new(),
+            acl: None,
         },
         entry: group,
         tables: vec![single(
@@ -1181,10 +1196,13 @@ impl Plan {
         for (index, rule) in program.rules.iter().enumerate() {
             limits.entry(rule.matches.src_vni).or_default().push(index);
         }
+        let acls: BTreeMap<Vni, &PlannedAcl> =
+            program.acls.iter().map(|acl| (acl.src, acl)).collect();
         let vnis: BTreeSet<Vni> = ingress
             .keys()
             .chain(denies.keys())
             .chain(limits.keys())
+            .chain(acls.keys())
             .copied()
             .collect();
         // Every VNI fits META (unlike MARK, which lost the top of the range to the PMD).
@@ -1192,11 +1210,11 @@ impl Plan {
             let vtep = *vteps.get(&vni).ok_or(Error::NoVtep(vni))?;
             let vpc = plan.vpc(
                 program,
-                vni,
-                vtep,
+                (vni, vtep),
                 &ingress.remove(&vni).unwrap_or_default(),
                 &denies.remove(&vni).unwrap_or_default(),
                 &limits.remove(&vni).unwrap_or_default(),
+                acls.get(&vni).copied(),
             );
             plan.vpcs.insert(vni, vpc);
         }
@@ -1266,19 +1284,20 @@ impl Plan {
                 .map(|&i| program.denies[i].peering)
                 .chain(vni_limits.iter().map(|&i| program.rules[i].peering))
                 .collect(),
+            acl: None,
         }
     }
 
-    /// The generation of source VPC `vni`, from its ingress rules, denies and rate limits
-    /// (indices into `program`).
+    /// The generation of source VPC `vni` (its VXLAN to `vtep`), from its ingress rules, denies
+    /// and rate limits (indices into `program`), and its planned ACL.
     fn vpc(
         &mut self,
         program: &Program,
-        vni: Vni,
-        vtep: Ipv4Addr,
+        (vni, vtep): (Vni, Ipv4Addr),
         vni_ingress: &[usize],
         vni_denies: &[usize],
         vni_limits: &[usize],
+        acl: Option<&PlannedAcl>,
     ) -> PlannedVpc {
         // Identical rules are left out, as `Program::compile` does: mlx5 fails to remove the
         // second.
@@ -1294,12 +1313,36 @@ impl Plan {
             .copied()
             .filter(|&i| seen.insert(&program.rules[i].matches))
             .collect();
-        let spec = self.spec(program, vni, vtep, vni_ingress, &vni_denies, &vni_limits);
+        let police = !vni_limits.is_empty();
+        // A planned ACL the NIC can't take is left to software, which runs it on everything.
+        let after_acl = if police {
+            (JUMP, vec![Arg::Jump(Group::Police(vni))])
+        } else {
+            (DELIVER, Vec::new())
+        };
+        let (acl, acl_tables) = match acl.map(|acl| (acl, self.acl(vni, acl, &after_acl))) {
+            Some((acl, Ok(tables))) => (Some(acl), tables),
+            Some((_, Err(unfit))) => {
+                tracing::warn!("VPC {vni}'s ACL is left to software: {unfit:?}");
+                (None, Vec::new())
+            }
+            None => (None, Vec::new()),
+        };
+        let mut spec = self.spec(program, vni, vtep, vni_ingress, &vni_denies, &vni_limits);
+        if let Some(acl) = acl {
+            spec.peerings.insert(acl.peering);
+            spec.acl = Some(acl.clone());
+        }
         // What another peer takes of a rule's destination passes, in both groups: a pass in the
         // deny group leaves the traffic to the police group, whose own passes deliver it.
         let passes = pass_matches(vni, &spec.passes);
-        let mut tables = Vec::new();
-        let police = !vni_limits.is_empty();
+        let mut tables = acl_tables;
+        // Its denies are the planned ACL's when it has one (`Program::compile`).
+        let deny = if acl.is_some() {
+            Some(Group::AclDispatch(vni))
+        } else {
+            (!vni_denies.is_empty()).then_some(Group::Deny(vni))
+        };
         if !vni_denies.is_empty() {
             let rules = vni_denies
                 .iter()
@@ -1340,15 +1383,15 @@ impl Plan {
         }
         let entry = if !vni_ingress.is_empty() {
             Group::Ingress(vni)
-        } else if vni_denies.is_empty() {
-            Group::Police(vni)
+        } else if let Some(deny) = deny {
+            deny
         } else {
-            Group::Deny(vni)
+            Group::Police(vni)
         };
         if !vni_ingress.is_empty() {
             // What the ingress rules let through goes on to the peering policy, or to software.
-            let next = if !vni_denies.is_empty() {
-                (COUNT_JUMP, vec![Arg::Jump(Group::Deny(vni))])
+            let next = if let Some(deny) = deny {
+                (COUNT_JUMP, vec![Arg::Jump(deny)])
             } else if police {
                 (COUNT_JUMP, vec![Arg::Jump(Group::Police(vni))])
             } else {

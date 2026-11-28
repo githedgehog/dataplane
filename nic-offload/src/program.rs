@@ -782,9 +782,11 @@ impl Program {
         }
         let mut program = Program {
             denies,
+            // Its drops are first-match denies whatever else of the peering stays in software:
+            // only what installing leaves out takes a planned ACL out.
             acls: planned_acls
                 .into_iter()
-                .filter(|acl| !left(acl.peering))
+                .filter(|a| !excluded.excludes(a.peering))
                 .collect(),
             refused: c.refused,
             ..Program::default()
@@ -992,13 +994,13 @@ impl Compilation {
         &mut self,
         rows: &[RuleRow<AclKey<I>, LookupResult>],
         v6: bool,
-        planned: &BTreeSet<Peering>,
+        planned: &BTreeSet<(Vni, Vni)>,
         prefix: impl Fn(PrefixSpec<I>) -> Prefix + Copy,
     ) {
         for (at, row) in rows.iter().enumerate() {
             let peering = Peering::new(row.rule.src_vni.value, row.rule.dst_vni.value);
-            // The rule planner takes this peering's ACL whole.
-            if planned.contains(&peering) {
+            // The rule planner takes this direction's ACL whole.
+            if planned.contains(&(row.rule.src_vni.value, row.rule.dst_vni.value)) {
                 continue;
             }
             let origin = Origin::Acl { v6, row: at };

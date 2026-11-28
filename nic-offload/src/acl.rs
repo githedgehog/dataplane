@@ -43,6 +43,8 @@ pub enum AclVerdict {
 pub struct PlannedAcl {
     /// The peering: its source VPC's only one.
     pub peering: Peering,
+    /// The source VPC: the direction of the peering this ACL is of.
+    pub src: Vni,
     /// UDP packets: source, destination, source port, destination port.
     pub udp: Table<AclVerdict>,
     /// TCP packets: as UDP.
@@ -111,7 +113,7 @@ fn ports(range: Option<PortRange>) -> Set {
 pub fn planned(
     acls: &AclFilterContext,
     destinations: &[Destination],
-) -> (Vec<PlannedAcl>, BTreeSet<Peering>) {
+) -> (Vec<PlannedAcl>, BTreeSet<(Vni, Vni)>) {
     let mut peers: BTreeMap<Vni, BTreeSet<Vni>> = BTreeMap::new();
     for d in destinations {
         peers.entry(d.src_vni).or_default().insert(d.dst_vni);
@@ -164,17 +166,21 @@ pub fn planned(
             })
             .collect();
         let Some(matches) = matches else { continue };
-        let Some(acl) = tables(peering, &matches) else {
+        let Some(acl) = tables(peering, src, &matches) else {
             continue;
         };
         planned.push(acl);
     }
-    let peerings = planned.iter().map(|acl| acl.peering).collect();
-    (planned, peerings)
+    // By direction: the other direction's source VPC may have other peers, and keep its denies.
+    let directions = planned
+        .iter()
+        .map(|acl: &PlannedAcl| (acl.src, acl.peering.other(acl.src)))
+        .collect();
+    (planned, directions)
 }
 
 /// The three tables of `rules` (a peering's, in first-match order). `None` if a rule is IPv6.
-fn tables(peering: Peering, rules: &[(Match, AclVerdict)]) -> Option<PlannedAcl> {
+fn tables(peering: Peering, src: Vni, rules: &[(Match, AclVerdict)]) -> Option<PlannedAcl> {
     let table = |fields: &[Field]| Table {
         fields: fields.to_vec(),
         rules: Vec::new(),
@@ -212,6 +218,7 @@ fn tables(peering: Peering, rules: &[(Match, AclVerdict)]) -> Option<PlannedAcl>
     }
     Some(PlannedAcl {
         peering,
+        src,
         udp,
         tcp,
         other,
@@ -265,8 +272,8 @@ mod tests {
             (rule(Some(UDP), half, Some(5000), false), AclVerdict::Pass),
             (rule(None, net, None, false), AclVerdict::Deny),
         ];
-        let acl =
-            tables(Peering::new(vni(300), vni(400)), &rules).unwrap_or_else(|| unreachable!());
+        let acl = tables(Peering::new(vni(300), vni(400)), vni(300), &rules)
+            .unwrap_or_else(|| unreachable!());
         let src = Ipv4Addr::new(10, 0, 1, 1);
         let low = Ipv4Addr::new(10, 0, 2, 1);
         let high = Ipv4Addr::new(10, 0, 2, 200);
@@ -287,8 +294,12 @@ mod tests {
         let all = (Ipv4Addr::UNSPECIFIED, 0);
         let m = rule(Some(TCP), all, None, true);
         // `planned` gives it Pass: here, the table as `planned` would build it.
-        let acl = tables(Peering::new(vni(300), vni(400)), &[(m, AclVerdict::Pass)])
-            .unwrap_or_else(|| unreachable!());
+        let acl = tables(
+            Peering::new(vni(300), vni(400)),
+            vni(300),
+            &[(m, AclVerdict::Pass)],
+        )
+        .unwrap_or_else(|| unreachable!());
         let any = Ipv4Addr::new(10, 0, 2, 1);
         assert_eq!(acl.decide(TCP, any, any, (1, 2)), AclVerdict::Pass);
     }
@@ -325,7 +336,7 @@ mod tests {
                         (m.clone(), v)
                     })
                     .collect();
-                let acl = tables(Peering::new(vni(300), vni(400)), &verdicts)
+                let acl = tables(Peering::new(vni(300), vni(400)), vni(300), &verdicts)
                     .unwrap_or_else(|| unreachable!());
                 for &(p, last, sport, dport) in packets.iter().take(32) {
                     let proto = [TCP, UDP, 1, 47][usize::from(p) % 4];

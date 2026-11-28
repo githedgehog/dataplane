@@ -79,8 +79,8 @@ struct State {
     trap: Option<std::num::NonZero<u8>>,
     meta: Option<u32>,
     decapped: bool,
-    /// The TAG registers rules wrote (only the bank's, so far).
-    tags: [u32; 1],
+    /// The TAG registers rules wrote: the bank's, then a planned ACL's.
+    tags: [u32; 8],
 }
 
 impl Plan {
@@ -118,7 +118,7 @@ impl Plan {
                 stamped: false,
                 trap: None,
                 meta: None,
-                tags: [0],
+                tags: [0; 8],
                 decapped: false,
             };
             for outcome in model.group(&view, Group::Root, start, 0)? {
@@ -311,6 +311,9 @@ impl Walk<'_> {
                 None,
                 Some((usize::from(*index), crate::mlx5::bank_tag(self.plan.bank))),
             ),
+            (TemplateAction::TagPerRule(index), Some(&Arg::Tag(value))) => {
+                (None, None, None, Some((usize::from(*index), value)))
+            }
             _ => return Err(ModelError::Arguments),
         };
         Ok(move |s: &mut State| {
