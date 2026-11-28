@@ -92,6 +92,10 @@ impl EthMatch {
 
 /// An IPv4 address and mask, supporting host, subnet and arbitrary masked matches.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+///
+/// The address is kept masked: mlx5 compares a rule's value as given, without its template's mask
+/// (a `/17` rule of `10.2.0.1` matches nothing; of `10.2.0.0`, `10.2.0.0/17`), so a value with
+/// host bits would match no packet on the NIC while the model matched it.
 pub struct Ipv4Prefix {
     addr: Ipv4Addr,
     mask: Ipv4Addr,
@@ -116,7 +120,7 @@ impl Ipv4Prefix {
             len => u32::MAX << (32 - len),
         };
         Ipv4Prefix {
-            addr,
+            addr: Ipv4Addr::from(u32::from(addr) & mask),
             mask: Ipv4Addr::from(mask),
         }
     }
@@ -124,7 +128,10 @@ impl Ipv4Prefix {
     /// Match with an arbitrary bit-mask.
     #[must_use]
     pub fn masked(addr: Ipv4Addr, mask: Ipv4Addr) -> Ipv4Prefix {
-        Ipv4Prefix { addr, mask }
+        Ipv4Prefix {
+            addr: Ipv4Addr::from(u32::from(addr) & u32::from(mask)),
+            mask,
+        }
     }
 }
 
@@ -240,7 +247,7 @@ impl Ipv6Prefix {
             len => u128::MAX << (128 - len),
         };
         Ipv6Prefix {
-            addr,
+            addr: Ipv6Addr::from(u128::from(addr) & mask),
             mask: Ipv6Addr::from(mask),
         }
     }
@@ -248,7 +255,10 @@ impl Ipv6Prefix {
     /// Match with an arbitrary bit-mask.
     #[must_use]
     pub fn masked(addr: Ipv6Addr, mask: Ipv6Addr) -> Ipv6Prefix {
-        Ipv6Prefix { addr, mask }
+        Ipv6Prefix {
+            addr: Ipv6Addr::from(u128::from(addr) & u128::from(mask)),
+            mask,
+        }
     }
 }
 
@@ -485,14 +495,14 @@ impl UdpMatch {
     /// mask (shapes enforce this), each its value.
     #[must_use]
     pub fn src_masked(mut self, value: u16, mask: u16) -> UdpMatch {
-        self.src = Some(Ports::Masked(value, mask));
+        self.src = Some(Ports::Masked(value & mask, mask));
         self
     }
 
     /// Constrain the destination port's bits under `mask`; see [`UdpMatch::src_masked`].
     #[must_use]
     pub fn dst_masked(mut self, value: u16, mask: u16) -> UdpMatch {
-        self.dst = Some(Ports::Masked(value, mask));
+        self.dst = Some(Ports::Masked(value & mask, mask));
         self
     }
 
@@ -555,14 +565,14 @@ impl TcpMatch {
     /// Constrain the source port's bits under `mask`; see [`UdpMatch::src_masked`].
     #[must_use]
     pub fn src_masked(mut self, value: u16, mask: u16) -> TcpMatch {
-        self.src = Some(Ports::Masked(value, mask));
+        self.src = Some(Ports::Masked(value & mask, mask));
         self
     }
 
     /// Constrain the destination port's bits under `mask`; see [`UdpMatch::src_masked`].
     #[must_use]
     pub fn dst_masked(mut self, value: u16, mask: u16) -> TcpMatch {
-        self.dst = Some(Ports::Masked(value, mask));
+        self.dst = Some(Ports::Masked(value & mask, mask));
         self
     }
 
@@ -803,5 +813,35 @@ mod tests {
                     own.2
                 ));
             });
+    }
+}
+
+#[cfg(test)]
+mod masked_values {
+    use super::*;
+
+    /// mlx5 compares a rule's value as given: a value is stored with its host bits cleared.
+    #[test]
+    fn values_are_kept_masked() {
+        let v4 = Ipv4Prefix::prefix(Ipv4Addr::new(10, 2, 0, 1), 17);
+        assert_eq!(v4, Ipv4Prefix::prefix(Ipv4Addr::new(10, 2, 0, 0), 17));
+        let v4 = Ipv4Prefix::masked(Ipv4Addr::new(10, 2, 0, 1), Ipv4Addr::new(255, 0, 255, 0));
+        assert_eq!(
+            v4,
+            Ipv4Prefix::masked(Ipv4Addr::new(10, 0, 0, 0), Ipv4Addr::new(255, 0, 255, 0))
+        );
+        let v6 = Ipv6Prefix::prefix(Ipv6Addr::new(0xfd00, 0, 0, 1, 0, 0, 0, 1), 64);
+        assert_eq!(
+            v6,
+            Ipv6Prefix::prefix(Ipv6Addr::new(0xfd00, 0, 0, 1, 0, 0, 0, 0), 64)
+        );
+        assert_eq!(
+            UdpMatch::default().src_masked(1100, 0xfc00),
+            UdpMatch::default().src_masked(1024, 0xfc00)
+        );
+        assert_eq!(
+            TcpMatch::default().dst_masked(0x1234, 0xff00),
+            TcpMatch::default().dst_masked(0x1200, 0xff00)
+        );
     }
 }
