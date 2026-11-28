@@ -41,8 +41,12 @@ pub struct Outcome {
     pub color: Option<Color>,
     /// The rules taken, in order.
     pub path: Vec<Role>,
-    /// The MARK it arrives with, if any.
+    /// The MARK it arrives with, if a rule marked it with a value of its own.
     pub mark: Option<u32>,
+    /// Whether the trap rule stamped it with the configuration generation (its MARK).
+    pub stamped: bool,
+    /// The META it arrives with, if any.
+    pub meta: Option<u32>,
     /// Whether its outer headers were removed: software receives the inner frame.
     pub decapped: bool,
     /// Where it ended up.
@@ -69,6 +73,8 @@ struct State {
     color: Option<Color>,
     path: Vec<Role>,
     mark: Option<u32>,
+    stamped: bool,
+    meta: Option<u32>,
     decapped: bool,
 }
 
@@ -104,6 +110,8 @@ impl Plan {
                 color: None,
                 path: Vec::new(),
                 mark: None,
+                stamped: false,
+                meta: None,
                 decapped: false,
             };
             for outcome in model.group(&view, Group::Root, start, 0)? {
@@ -193,12 +201,25 @@ impl Walk<'_> {
                         s.mark = Some(*id);
                     }
                 }
-                TemplateAction::MarkPerRule => {
-                    let Some(&Arg::Mark(id)) = args.next() else {
+                TemplateAction::MarkPerRule => match args.next() {
+                    Some(&Arg::Mark(id)) => {
+                        for s in &mut states {
+                            s.mark = Some(id);
+                        }
+                    }
+                    Some(Arg::Stamp) => {
+                        for s in &mut states {
+                            s.stamped = true;
+                        }
+                    }
+                    _ => return Err(ModelError::Arguments),
+                },
+                TemplateAction::MetaPerRule => {
+                    let Some(&Arg::Meta(value)) = args.next() else {
                         return Err(ModelError::Arguments);
                     };
                     for s in &mut states {
-                        s.mark = Some(id);
+                        s.meta = Some(value);
                     }
                 }
                 // No later pattern of the same rule looks at the frame: only its fate follows.
@@ -223,9 +244,12 @@ impl Walk<'_> {
                         })
                         .collect();
                 }
-                // The one fixed jump of a plan: the root's, to the switch.
+                // The fixed jumps of a plan: the root's, to the switch; deliveries', to the trap.
                 TemplateAction::Jump(group) if *group == crate::mlx5::SWITCH => {
                     return self.jump(frame, Group::Switch, states, depth);
+                }
+                TemplateAction::Jump(group) if *group == crate::mlx5::TRAP => {
+                    return self.jump(frame, Group::Trap, states, depth);
                 }
                 TemplateAction::Jump(_) => return Err(ModelError::Arguments),
                 TemplateAction::JumpPerRule => {
@@ -279,6 +303,8 @@ impl State {
             color: self.color,
             path: self.path,
             mark: self.mark,
+            stamped: self.stamped,
+            meta: self.meta,
             decapped: self.decapped,
             verdict,
         }

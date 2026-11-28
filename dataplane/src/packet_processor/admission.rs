@@ -298,7 +298,9 @@ impl Source for Current {
             accepted: self.accepted.as_ref().map(RateLimitReader::load),
             peers: Peers::default(),
         };
-        Tables::only(self.snapshot.insert(Snapshot::new(0, Bank::A, tables)))
+        // Generation 1 in bank A: what hardware stamps when no publisher flips (`nic_offload`'s
+        // ports start there, as `Generations` does).
+        Tables::only(self.snapshot.insert(Snapshot::new(1, Bank::A, tables)))
     }
 
     fn settle(&mut self, _: Seen) {}

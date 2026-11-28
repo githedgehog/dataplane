@@ -626,3 +626,39 @@ fn factories_hand_readers_to_other_threads() {
     });
     assert_eq!(generations.newest(), 49);
 }
+
+/// With real hardware, a flip is made only once hardware stamps the newest generation: until it
+/// confirms, the flip waits, and nothing a worker sees can acknowledge it.
+#[test]
+fn a_flip_waits_for_hardware_to_stamp() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+    let log = drops();
+    let asked: Rc<Cell<Option<Stamp>>> = Rc::new(Cell::new(None));
+    let stamps = Rc::new(Cell::new(false));
+    let generations = Generations::new(Tag::new(1, &log)).with_hardware({
+        let (asked, stamps) = (Rc::clone(&asked), Rc::clone(&stamps));
+        move |stamp| {
+            asked.set(Some(stamp));
+            stamps.get()
+        }
+    });
+    let mut reader = generations.reader();
+    generations.offer(Tag::new(2, &log));
+    assert_eq!(generations.step(), Stepped::Began(2));
+    let _ = reader.live();
+    assert_eq!(generations.step(), Stepped::Waiting(Wait::NotStamped));
+    assert_eq!(
+        asked.get(),
+        Some(Stamp::new(Bank::B, 2)),
+        "hardware asked for 2's stamp"
+    );
+    // Not flipped: an idle worker acknowledges nothing, and nothing retires.
+    for _ in 0..4 {
+        let _ = reader.live();
+        reader.idle();
+    }
+    assert_eq!(generations.retire(), Err(Wait::NotFlipped));
+    stamps.set(true);
+    assert_eq!(generations.step(), Stepped::Flipped(2));
+}

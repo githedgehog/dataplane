@@ -20,17 +20,21 @@ use rekon::{SyncCreate, SyncObserve, SyncReconcile, SyncRemove};
 use tracing::{error, info, warn};
 
 use super::{
-    Arg, Error, Group, MeterKey, Plan, PlannedTable, PlannedVpc, Role, SWITCH, VpcSpec,
+    Arg, Error, Group, MeterKey, Plan, PlannedTable, PlannedVpc, Role, SWITCH, TRAP, VpcSpec,
     unknown_state,
 };
 use crate::Policy;
 use crate::program::{Exclusions, IngressVerdict, Origin, Peering, Program, Scope};
+use net::packet::{Bank, Mark, Stamp};
 
 #[cfg(test)]
 mod tests;
 
 /// How often the rules are checked against the published policy.
 const POLL: Duration = Duration::from_millis(200);
+/// How often a port looks for a restamp while it waits for the policy to change: a flip waits on
+/// every port.
+const STAMP_POLL: Duration = Duration::from_millis(1);
 /// How often hardware counters are reported.
 const REPORT: Duration = Duration::from_secs(10);
 /// The highest flow group mlx5 hardware steering takes (BlueField-3: 32762 groups).
@@ -48,7 +52,8 @@ type Table<'t> = SharedTable<'t, Ingress>;
 static FORGOTTEN: concurrency::process_global::Mutex<Vec<usize>> =
     concurrency::process_global::Mutex::new(Vec::new());
 
-/// Flow group numbers: 0 is the root, 1 the switch, the rest are handed out and taken back.
+/// Flow group numbers: 0 is the root, 1 the switch, 2 the trap, the rest are handed out and taken
+/// back.
 #[derive(Debug)]
 struct Groups {
     next: u32,
@@ -82,6 +87,16 @@ struct Switch<'t> {
     exceptions: Vec<Rule<'t>>,
     table: Table<'t>,
     exception_tables: Vec<Table<'t>>,
+}
+
+/// The trap table and its one rule, which stamps what the switch passes on.
+#[derive(Debug)]
+struct Trap<'t> {
+    // Fields drop in order: the rule before its table.
+    rule: Rule<'t>,
+    table: Table<'t>,
+    /// The planned rule's actions template, for updates in place.
+    actions: usize,
 }
 
 /// A source VPC's generation of rules.
@@ -233,6 +248,10 @@ pub struct Port<'t> {
     root: Option<Rule<'t>>,
     switch: Option<Switch<'t>>,
     vpcs: BTreeMap<Vni, Generation<'t>>,
+    /// After the generations, which jump to it.
+    trap: Option<Trap<'t>>,
+    /// The stamp the trap rule writes: the configuration generation hardware classifies under.
+    stamp: Stamp,
     meters: Vec<InstalledMeter<'t>>,
     flows: &'t TemplateFlows<'t>,
     patterns: Vec<(Vec<ItemShape>, SharedPatternTemplate<'t, Ingress>)>,
@@ -262,12 +281,14 @@ impl<'t> Port<'t> {
             root: None,
             switch: None,
             vpcs: BTreeMap::new(),
+            trap: None,
+            stamp: Stamp::new(Bank::A, 1),
             meters: Vec::new(),
             flows,
             patterns: Vec::new(),
             actions: Vec::new(),
             groups: Groups {
-                next: 2,
+                next: 3,
                 free: Vec::new(),
             },
             next_profile: 0,
@@ -278,6 +299,43 @@ impl<'t> Port<'t> {
             retired_denied: 0,
             retired_meters: BTreeMap::new(),
             retired_ingress: BTreeMap::new(),
+        }
+    }
+
+    /// The same port, stamping with `stamp` once its trap rule is installed.
+    #[must_use]
+    pub fn stamping(mut self, stamp: Stamp) -> Port<'t> {
+        self.stamp = stamp;
+        self
+    }
+
+    /// The stamp the trap rule writes, or will once installed.
+    #[must_use]
+    pub fn stamp(&self) -> Stamp {
+        self.stamp
+    }
+
+    /// Stamp what the switch passes on with `stamp` from now on: the trap rule, rewritten in place
+    /// (a flip of the configuration generation). Before the rule is installed, it is installed
+    /// with `stamp`.
+    ///
+    /// # Errors
+    ///
+    /// If the rule could not be rewritten. Any failure loses the port ([`Port::lose`]): a rule
+    /// left stamping the old generation would have its packets dropped as stale once that
+    /// generation retires, so nothing the port holds may stay reachable.
+    pub fn restamp(&mut self, stamp: Stamp) -> Result<(), Error> {
+        let Some(trap) = &mut self.trap else {
+            self.stamp = stamp;
+            return Ok(());
+        };
+        let args = [SharedArg::Mark(Mark::new(stamp, None).to_bits())];
+        match trap.table.update(&mut trap.rule, trap.actions, &args) {
+            Ok(()) => {
+                self.stamp = stamp;
+                Ok(())
+            }
+            Err(e) => Err(self.lose("restamping the trap rule", e)),
         }
     }
 
@@ -472,6 +530,8 @@ impl<'t> Port<'t> {
                 Arg::Jump(g) => group(g).map(SharedArg::Jump),
                 Arg::Meter(m) => Ok(SharedArg::Meter(self.installed_meter(m)?.meter.clone())),
                 Arg::Mark(id) => Ok(SharedArg::Mark(id)),
+                Arg::Stamp => Ok(SharedArg::Mark(Mark::new(self.stamp, None).to_bits())),
+                Arg::Meta(value) => Ok(SharedArg::Meta(value)),
             })
             .collect()
     }
@@ -500,6 +560,7 @@ impl<'t> Port<'t> {
         match group {
             Group::Root => Ok(FlowGroup(0)),
             Group::Switch => Ok(SWITCH),
+            Group::Trap => Ok(TRAP),
             Group::Color(m) => self
                 .installed_meter(m)?
                 .colors
@@ -514,11 +575,24 @@ impl<'t> Port<'t> {
         }
     }
 
-    /// Make sure of the switch table, its catch-all and the root, in that order.
+    /// Make sure of the trap, the switch table, its catch-all and the root, in that order.
     fn fixed(&mut self, plan: &Plan) -> Result<(), Error> {
         let [root, switch, catch_all, exceptions @ ..] = plan.fixed.as_slice() else {
             return Ok(());
         };
+        if let Some(planned) = &plan.trap
+            && self.trap.is_none()
+        {
+            let table = self.table(plan, planned, TRAP)?;
+            let rule = &planned.rules[0];
+            let args = self.args(&rule.args, &|_| Err(Error::NoSuchGroup(Group::Trap)))?;
+            let installed = self.insert("inserting the trap rule", &table, rule, &args)??;
+            self.trap = Some(Trap {
+                rule: installed,
+                table,
+                actions: rule.actions,
+            });
+        }
         if self.switch.is_none() {
             let table = self.table(plan, switch, SWITCH)?;
             let catch_all_table = self.table(plan, catch_all, SWITCH)?;
@@ -835,6 +909,10 @@ impl<'t> Port<'t> {
             drop(table);
             drop(exception_tables);
         }
+        if let Some(Trap { rule, table, .. }) = self.trap.take() {
+            self.destroy_rules("removing the trap rule", [((), rule)])?;
+            drop(table);
+        }
         for meter in std::mem::take(&mut self.meters) {
             self.unmake(meter)?;
         }
@@ -1023,9 +1101,10 @@ impl SyncCreate for Port<'_> {
             .iter()
             .map(|arg| match *arg {
                 Arg::Mark(id) => Ok(SharedArg::Mark(id)),
+                Arg::Meta(value) => Ok(SharedArg::Meta(value)),
                 Arg::Jump(_) => Ok(SharedArg::Jump(entry)),
-                // A switch rule charges no meter.
-                Arg::Meter(_) => Err(Error::MeterNotMade),
+                // A switch rule charges no meter, nor stamps.
+                Arg::Meter(_) | Arg::Stamp => Err(Error::MeterNotMade),
             })
             .collect();
         let args = match args {
@@ -1377,9 +1456,11 @@ pub(crate) fn peerings(program: &Program, refused: &[(Role, Error)]) -> Result<E
             | Role::Ingress(_)
             | Role::IngressColor(..)
             | Role::Exception(_)
+            | Role::Trap
             | Role::CatchAll(
                 Group::Root
                 | Group::Switch
+                | Group::Trap
                 | Group::Color(_)
                 | Group::Ingress(_)
                 | Group::IngressColor(..)
@@ -1419,8 +1500,21 @@ pub fn run(
             return;
         }
     };
+    let stamping = policy
+        .stamping
+        .as_ref()
+        .map(|stamping| (stamping, stamping.register()));
     let mut port = Port::new(&flows);
+    if let Some((stamping, _)) = &stamping {
+        port = port.stamping(stamping.wanted());
+    }
+    let sync = |port: &mut Port<'_>| {
+        if let Some((stamping, applied)) = &stamping {
+            sync_stamp(port, port_name, stamping, applied);
+        }
+    };
     while !stop() {
+        sync(&mut port);
         let (filter, limits, routes) = (acls.load(), reader.load(), routing.load());
         let ingress = ingress_reader.load();
         let destinations = routes.destinations();
@@ -1485,7 +1579,11 @@ pub fn run(
         state(port_name, &port, in_software);
         let mut next_report = clock::deadline(REPORT);
         while !changed() {
-            std::thread::sleep(POLL);
+            let next_poll = clock::deadline(POLL);
+            while clock::now() < next_poll {
+                sync(&mut port);
+                std::thread::sleep(STAMP_POLL);
+            }
             if clock::now() >= next_report {
                 report(port_name, &port);
                 next_report = clock::deadline(REPORT);
@@ -1493,6 +1591,27 @@ pub fn run(
         }
         report(port_name, &port);
     }
+}
+
+/// Restamp `port`'s trap rule if the publisher wants another stamp, and confirm it in `applied`.
+fn sync_stamp(
+    port: &mut Port<'_>,
+    port_name: &str,
+    stamping: &crate::Stamping,
+    applied: &concurrency::sync::atomic::AtomicU8,
+) {
+    let wanted = stamping.wanted();
+    if port.stamp() != wanted
+        && let Err(e) = port.restamp(wanted)
+    {
+        // The port is lost: nothing it holds is reachable, so nothing stamps the old generation
+        // (unless its root could not be removed, which `lose` reports).
+        error!("port {port_name}: the trap rule could not be restamped: {e}");
+    }
+    applied.store(
+        wanted.to_bits(),
+        concurrency::sync::atomic::Ordering::Release,
+    );
 }
 
 /// The policy as seen together: the ACLs, the rate limits, the ingress policy, where flow-filter

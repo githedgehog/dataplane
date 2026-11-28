@@ -10,7 +10,8 @@ use core::ptr::{from_ref, null};
 
 use dpdk_sys::{
     rte_eth_hash_function, rte_flow_action, rte_flow_action_handle, rte_flow_action_jump,
-    rte_flow_action_mark, rte_flow_action_queue, rte_flow_action_rss, rte_flow_action_type as at,
+    rte_flow_action_mark, rte_flow_action_modify_field, rte_flow_action_queue, rte_flow_action_rss,
+    rte_flow_action_type as at, rte_flow_field_id, rte_flow_modify_op,
 };
 
 use crate::flow::{Domain, FlowGroup};
@@ -61,6 +62,12 @@ pub enum TemplateAction {
     SendToKernel,
     /// Color the packet with a per-rule [`Meter`]; match the color in a later group.
     Meter,
+    /// Set the packet's META to the value each rule names with [`RuleArg::Meta`]: it arrives
+    /// with the packet ([`Mbuf::rx_meta`](crate::mem::Mbuf::rx_meta)) if not zero.
+    ///
+    /// A modify-header action: mlx5 orders it after decapsulation, counting and metering, and
+    /// before the fate.
+    MetaPerRule,
 }
 
 /// The queues and hash types of a [`TemplateAction::Rss`].
@@ -77,7 +84,10 @@ impl TemplateAction {
     pub(crate) fn per_rule(&self) -> bool {
         matches!(
             self,
-            TemplateAction::Meter | TemplateAction::JumpPerRule | TemplateAction::MarkPerRule
+            TemplateAction::Meter
+                | TemplateAction::JumpPerRule
+                | TemplateAction::MarkPerRule
+                | TemplateAction::MetaPerRule
         )
     }
 }
@@ -91,6 +101,8 @@ pub enum RuleArg<'a, D: Domain> {
     Jump(FlowGroup),
     /// The value for a [`TemplateAction::MarkPerRule`].
     Mark(u32),
+    /// The value for a [`TemplateAction::MetaPerRule`].
+    Meta(u32),
 }
 
 /// The configuration an action points at.
@@ -101,6 +113,7 @@ enum Conf {
     Queue(rte_flow_action_queue),
     Handle(*mut rte_flow_action_handle),
     Mark(rte_flow_action_mark),
+    ModifyField(ModifyField),
     /// `rss.queue` points into `queues`, whose heap allocation does not move with the action.
     Rss {
         rss: rte_flow_action_rss,
@@ -127,6 +140,7 @@ impl OwnedAction {
             Conf::Queue(queue) => from_ref(queue).cast(),
             Conf::Handle(handle) => handle.cast_const().cast(),
             Conf::Mark(mark) => from_ref(mark).cast(),
+            Conf::ModifyField(ModifyField(field)) => from_ref(field).cast(),
             Conf::Rss { rss, .. } => from_ref(rss).cast(),
         };
         rte_flow_action {
@@ -145,6 +159,58 @@ pub(crate) fn lower(actions: &[OwnedAction]) -> Vec<rte_flow_action> {
         conf: null(),
     });
     lowered
+}
+
+/// A modify-field configuration (whose bindings implement no `Debug`: unions).
+#[derive(Clone, Copy)]
+struct ModifyField(rte_flow_action_modify_field);
+
+impl core::fmt::Debug for ModifyField {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ModifyField")
+            .field("dst", &self.0.dst.field)
+            .field("width", &self.0.width)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Set META to `value`: a modify-field from an immediate, the whole 32 bits.
+fn set_meta(value: u32) -> OwnedAction {
+    // SAFETY: zero is valid for every field of this C struct.
+    let mut field: rte_flow_action_modify_field = unsafe { core::mem::zeroed() };
+    field.operation = rte_flow_modify_op::RTE_FLOW_MODIFY_SET;
+    field.dst.field = rte_flow_field_id::RTE_FLOW_FIELD_META;
+    field.src.field = rte_flow_field_id::RTE_FLOW_FIELD_VALUE;
+    // `rte_flow_item_meta.data` is a host-order `u32`.
+    let mut immediate = [0u8; 16];
+    immediate[..4].copy_from_slice(&value.to_ne_bytes());
+    field.src.annon1.value = immediate;
+    field.width = 32;
+    OwnedAction::new(
+        at::RTE_FLOW_ACTION_TYPE_MODIFY_FIELD,
+        Conf::ModifyField(ModifyField(field)),
+    )
+}
+
+/// The mask of a per-rule [`set_meta`]: the destination fixed, every bit of it; the immediate
+/// left zero, which leaves it to each rule. (The immediate shares a union with the source's level
+/// and offset, so nothing else of the source is set.) As proved on mlx5 HWS in
+/// `notes/match-action-dag/spike-trap/trapspike.c`.
+fn set_meta_mask() -> OwnedAction {
+    // SAFETY: zero is valid for every field of this C struct.
+    let mut field: rte_flow_action_modify_field = unsafe { core::mem::zeroed() };
+    field.operation = rte_flow_modify_op::RTE_FLOW_MODIFY_SET;
+    field.dst.field = rte_flow_field_id::RTE_FLOW_FIELD_META;
+    // Writing a union's field is safe: these are the destination's level, tag index and offset.
+    field.dst.annon1.annon1.annon1.annon1.level = u8::MAX;
+    field.dst.annon1.annon1.annon1.annon1.annon1.tag_index = u8::MAX;
+    field.dst.annon1.annon1.offset = u32::MAX;
+    field.src.field = rte_flow_field_id::RTE_FLOW_FIELD_VALUE;
+    field.width = u32::MAX;
+    OwnedAction::new(
+        at::RTE_FLOW_ACTION_TYPE_MODIFY_FIELD,
+        Conf::ModifyField(ModifyField(field)),
+    )
 }
 
 /// The fixed part of `action`: what the template and every rule pass for it.
@@ -190,6 +256,7 @@ fn fixed(action: &TemplateAction) -> OwnedAction {
         TemplateAction::Meter => OwnedAction::new(at::RTE_FLOW_ACTION_TYPE_INDIRECT, Conf::None),
         TemplateAction::JumpPerRule => OwnedAction::new(at::RTE_FLOW_ACTION_TYPE_JUMP, Conf::None),
         TemplateAction::MarkPerRule => OwnedAction::new(at::RTE_FLOW_ACTION_TYPE_MARK, Conf::None),
+        TemplateAction::MetaPerRule => set_meta(0),
         TemplateAction::VxlanDecap => {
             OwnedAction::new(at::RTE_FLOW_ACTION_TYPE_VXLAN_DECAP, Conf::None)
         }
@@ -221,6 +288,7 @@ pub(crate) fn template(actions: &[TemplateAction]) -> (Vec<OwnedAction>, Vec<Own
                 at::RTE_FLOW_ACTION_TYPE_MARK,
                 Conf::Mark(rte_flow_action_mark { id: u32::MAX }),
             ),
+            TemplateAction::MetaPerRule => set_meta_mask(),
             ref other => fixed(other),
         })
         .collect();
@@ -299,6 +367,7 @@ pub(crate) fn rule<D: Domain>(
                     at::RTE_FLOW_ACTION_TYPE_MARK,
                     Conf::Mark(rte_flow_action_mark { id: *id }),
                 )),
+                (TemplateAction::MetaPerRule, RuleArg::Meta(value)) => Ok(set_meta(*value)),
                 _ => Err(ArgumentError::Kind {
                     index,
                     action: action.clone(),
@@ -397,6 +466,35 @@ mod tests {
                 panic!("a mark action without a mark: {:?}", actions[1].conf)
             };
             assert_eq!(mark.id, id);
+        });
+    }
+
+    /// A per-rule META leaves its value to the rule, and the rule's value is what it sets.
+    #[test]
+    fn a_per_rule_meta_sets_the_rules_value() {
+        let (values, masks) = template(&[TemplateAction::MetaPerRule]);
+        let modify = |actions: &[OwnedAction]| match &actions[0].conf {
+            Conf::ModifyField(ModifyField(field)) => *field,
+            other => panic!("not a modify-field: {other:?}"),
+        };
+        let mask = modify(&masks);
+        assert_eq!(mask.dst.field, rte_flow_field_id::RTE_FLOW_FIELD_META);
+        assert_eq!(mask.width, u32::MAX);
+        // SAFETY: the immediate view of the union, which the mask leaves zero.
+        assert_eq!(unsafe { mask.src.annon1.value }, [0; 16]);
+        assert_eq!(modify(&values).width, 32);
+        bolero::check!().with_type::<u32>().for_each(|&value| {
+            let actions = rule::<crate::flow::Ingress>(
+                &[TemplateAction::MetaPerRule],
+                &[RuleArg::Meta(value)],
+            )
+            .unwrap_or_else(|e| panic!("{e}"));
+            let field = modify(&actions);
+            assert_eq!(field.operation, rte_flow_modify_op::RTE_FLOW_MODIFY_SET);
+            // SAFETY: the immediate view of the union, which `set_meta` writes.
+            let immediate = unsafe { field.src.annon1.value };
+            assert_eq!(immediate[..4], value.to_ne_bytes());
+            assert_eq!(immediate[4..], [0; 12]);
         });
     }
 

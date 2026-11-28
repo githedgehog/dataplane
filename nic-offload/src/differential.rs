@@ -1385,8 +1385,8 @@ fn check_overlay(overlay: &ValidatedOverlay, targets: &[RawRule], frames: &[RawF
 }
 
 /// Decapsulation changes no verdict, and what arrives decapsulated carries its source VNI: a frame
-/// the switch took is delivered decapsulated and marked, any other one as it was, unmarked; and
-/// transit VXLAN is never decapsulated.
+/// the switch took is delivered decapsulated with its VNI in META, any other one as it was, without;
+/// everything delivered through the switch is stamped; and transit VXLAN is never decapsulated.
 fn check_decap(plain: &Plan, decap: &Plan, frame: &Frame, raw: &RawFrame) {
     let verdicts = |outcomes: &[crate::model::Outcome]| {
         let mut v: Vec<_> = outcomes
@@ -1433,20 +1433,22 @@ fn check_decap(plain: &Plan, decap: &Plan, frame: &Frame, raw: &RawFrame) {
                     "switched by another VNI\nframe: {raw:?}"
                 );
                 assert!(
-                    outcome.decapped && outcome.mark == Some(vni),
-                    "a switched frame delivered encapsulated or unmarked\nframe: {raw:?}\noutcome: {outcome:?}"
+                    outcome.decapped
+                        && outcome.meta == Some(crate::mlx5::META_VXLAN | vni)
+                        && outcome.stamped,
+                    "a switched frame delivered encapsulated, without its VNI, or unstamped\nframe: {raw:?}\noutcome: {outcome:?}"
                 );
             }
             (_, None) => assert!(
-                !outcome.decapped && outcome.mark.is_none(),
-                "an unswitched frame decapsulated or marked\nframe: {raw:?}\noutcome: {outcome:?}"
+                !outcome.decapped && outcome.meta.is_none() && outcome.mark.is_none(),
+                "an unswitched frame decapsulated or given a VNI\nframe: {raw:?}\noutcome: {outcome:?}"
             ),
             (_, Some(_)) => {}
         }
     }
     for outcome in decap.outcomes(&frame.transit()).unwrap() {
         assert!(
-            !outcome.decapped && outcome.mark.is_none() && outcome.meters.is_empty(),
+            !outcome.decapped && outcome.meta.is_none() && outcome.meters.is_empty(),
             "transit VXLAN touched\nframe: {raw:?}\noutcome: {outcome:?}"
         );
     }

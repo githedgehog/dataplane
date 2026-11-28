@@ -251,6 +251,9 @@ pub struct Generations<T: Send + Sync> {
     /// coalesce while two generations are live, I4).
     pending: RefCell<Option<T>>,
     policy: Policy,
+    /// Real hardware's selector, if any: asked at each flip to stamp the newest generation, and
+    /// whether it does yet (see [`Generations::with_hardware`]).
+    hardware: Option<Box<dyn Fn(Stamp) -> bool>>,
 }
 
 /// How workers acknowledge a flip.
@@ -299,6 +302,8 @@ pub enum Wait {
     NothingPending,
     /// Hardware does not stamp the newest generation yet.
     NotFlipped,
+    /// Hardware was asked to stamp the newest generation, and has not confirmed it yet.
+    NotStamped,
     /// Some worker may still hold packets stamped with the previous generation.
     NotAcknowledged,
 }
@@ -323,7 +328,18 @@ impl<T: Send + Sync> Generations<T> {
             selector,
             pending: RefCell::new(None),
             policy: Policy::default(),
+            hardware: None,
         }
+    }
+
+    /// The same, flipping real hardware too: at each flip, `stamp` is asked to have hardware stamp
+    /// the newest generation, and answers whether it does yet. The flip waits until it does
+    /// ([`Wait::NotStamped`]): a flip hardware has not made would let idle workers acknowledge,
+    /// and the previous generation retire, while packets are still stamped with it.
+    #[must_use]
+    pub fn with_hardware(mut self, stamp: impl Fn(Stamp) -> bool + 'static) -> Self {
+        self.hardware = Some(Box::new(stamp));
+        self
     }
 
     /// The same, with workers acknowledging by `policy`. Before any reader exists.
@@ -410,6 +426,11 @@ impl<T: Send + Sync> Generations<T> {
         let newest = state.newest.generation;
         if !self.all(|p| p.observed.load(Ordering::Acquire) >= newest) {
             return Err(Wait::NotObserved);
+        }
+        if let Some(hardware) = &self.hardware
+            && !hardware(state.newest.stamp())
+        {
+            return Err(Wait::NotStamped);
         }
         self.selector
             .store(state.newest.stamp().to_bits(), Ordering::Release);
@@ -579,7 +600,11 @@ impl<T: Send + Sync> Reader<'_, T> {
     /// stamped with the newest generation means the packets stamped before the flip are through.
     /// A later straggler is stale once the previous generation retires, and is dropped.
     ///
-    /// Unstamped packets prove nothing: older stamped ones may still be queued behind them.
+    /// Unstamped packets prove nothing: older stamped ones may still be queued behind them (a
+    /// full burst says nothing of what follows it, unlike an empty poll). So a busy worker whose
+    /// ports stamp nothing never acknowledges outside software mode: mixing stamping and
+    /// non-stamping ports needs acknowledgement per queue (not yet; slice 1 step 5).
+    ///
     /// In software mode ([`Policy::software`]) nothing is stamped, and every packet runs under
     /// the newest generation read: the first burst after the flip acknowledges.
     pub fn settle(&self, seen: Seen) {

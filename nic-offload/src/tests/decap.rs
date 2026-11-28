@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright Open Network Fabric Authors
 
-//! Decapsulation in the NIC: what arrives decapsulated and marked with its VNI, and what not.
+//! Decapsulation in the NIC: what arrives decapsulated with its VNI in META, and what not; and
+//! that everything the switch passes on is stamped (the trap rule).
 
 use std::collections::BTreeMap;
 use std::net::Ipv4Addr;
@@ -10,7 +11,7 @@ use dpdk::flow::template::TemplateAction;
 use dpdk::queue::rx::RxQueueIndex;
 use net::vxlan::Vni;
 
-use crate::mlx5::{MAX_MARKED_VNI, Plan};
+use crate::mlx5::{META_VXLAN, Plan, vni_of_meta};
 use crate::model::{Outcome, Verdict};
 use crate::program::Program;
 
@@ -64,20 +65,24 @@ fn only(outcomes: &[Outcome]) -> &Outcome {
 
 const SRC: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
 
+/// Every VNI, the top of the range included (which MARK could not carry: the PMD reserves it).
 #[test]
-fn a_vpc_without_rules_is_decapsulated_and_marked_with_its_vni() {
-    let plan = plan(&[300, 400, MAX_MARKED_VNI]);
-    for v in [300, 400, MAX_MARKED_VNI] {
+fn a_vpc_without_rules_is_decapsulated_with_its_vni_in_meta_and_stamped() {
+    let vnis = [300, 400, 0x00ff_ffef, 0x00ff_fffe, 0x00ff_ffff];
+    let plan = plan(&vnis);
+    for v in vnis {
         let outcome = plan.outcomes(&vxlan(v, VTEP, SRC, 64)).unwrap();
         let outcome = only(&outcome);
         assert_eq!(outcome.verdict, Verdict::Delivered);
-        assert!(outcome.decapped);
-        assert_eq!(outcome.mark, Some(v));
+        assert!(outcome.decapped && outcome.stamped, "{v:#x}: {outcome:?}");
+        assert_eq!(outcome.meta, Some(META_VXLAN | v));
+        assert_eq!(outcome.meta.and_then(vni_of_meta), Some(v));
+        assert_eq!(outcome.mark, None, "MARK is the stamp's alone");
     }
 }
 
 #[test]
-fn what_software_must_judge_arrives_encapsulated_and_unmarked() {
+fn what_software_must_judge_arrives_encapsulated_and_stamped() {
     let plan = plan(&[300]);
     let cases = [
         ("outer TTL 0", vxlan(300, VTEP, SRC, 0)),
@@ -96,22 +101,11 @@ fn what_software_must_judge_arrives_encapsulated_and_unmarked() {
         let outcome = only(&outcomes);
         assert_eq!(outcome.verdict, Verdict::Delivered, "{case}");
         assert!(
-            !outcome.decapped && outcome.mark.is_none(),
+            !outcome.decapped && outcome.meta.is_none() && outcome.mark.is_none(),
             "{case}: {outcome:?}"
         );
-    }
-}
-
-/// A VNI above the largest deliverable mark would arrive unmarked: that VPC stays in software.
-#[test]
-fn a_vni_no_mark_carries_stays_in_software() {
-    // The first VNI past the bound, and the two that lost their mark on hardware.
-    for top in [MAX_MARKED_VNI + 1, 0x00ff_fffe, 0x00ff_ffff] {
-        let plan = plan(&[300, top]);
-        assert!(!plan.vpcs.contains_key(&vni(top)), "{top:#x}");
-        let outcomes = plan.outcomes(&vxlan(top, VTEP, SRC, 64)).unwrap();
-        let outcome = only(&outcomes);
-        assert!(!outcome.decapped && outcome.mark.is_none(), "{top:#x}");
+        // Through the switch, so through the trap: stamped, as everything the switch passes on.
+        assert!(outcome.stamped, "{case}: {outcome:?}");
     }
 }
 

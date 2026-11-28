@@ -339,11 +339,9 @@ impl<'p> Worker<'p> {
         }
         counters.burst(rx_mbufs.len(), dpdk::mem::MBUF_BURST);
         let how = dpdk::mem::HeadFetch::DEFAULT;
+        how.fetch(rx_mbufs.iter(), |mbuf| head_lines(mbuf.decapsulated()));
         how.fetch(rx_mbufs.iter(), |mbuf| {
-            head_lines(mbuf.nic_decap().is_some())
-        });
-        how.fetch(rx_mbufs.iter(), |mbuf| {
-            more_head_lines(mbuf.nic_decap().is_some(), mbuf.raw_data())
+            more_head_lines(mbuf.decapsulated(), mbuf.raw_data())
         });
         self.run_pipeline(slot, tx_by_if, pipeline, scratch, counters);
         true
@@ -593,22 +591,43 @@ fn more_head_lines(decapsulated: bool, frame: &[u8]) -> core::ops::Range<usize> 
     }
 }
 
-/// What the NIC tells about a received frame beyond its bytes.
+/// What the NIC tells about a received frame beyond its bytes (`nic_offload::mlx5`'s layout,
+/// `notes/match-action-dag/TRAP-RESUME.md` §3).
 pub(crate) trait RxContext {
-    /// The VNI of the VXLAN the NIC decapsulated, as its MARK: only the NIC's decapsulating rules
-    /// mark (see `nic_offload::mlx5`).
+    /// Whether the NIC decapsulated it: it carries META. A flag in the mbuf's first cache line,
+    /// for prefetching before the value (in the second) is read.
+    fn decapsulated(&self) -> bool;
+    /// What the NIC's decapsulating rule wrote in META: a discriminant (the VNI, for VXLAN).
     fn nic_decap(&self) -> Option<u32>;
+    /// What the NIC's trap rule wrote in MARK: the stamp, and where it left the packet.
+    fn trap_mark(&self) -> Option<u32>;
 }
 
 impl RxContext for Mbuf<'_> {
+    fn decapsulated(&self) -> bool {
+        self.rx_flags().contains(dpdk::mem::RxFlags::META)
+    }
+
     fn nic_decap(&self) -> Option<u32> {
+        self.rx_meta()
+    }
+
+    fn trap_mark(&self) -> Option<u32> {
         self.rx_mark()
     }
 }
 
 #[cfg(test)]
 impl RxContext for net::buffer::TestBuffer {
+    fn decapsulated(&self) -> bool {
+        false
+    }
+
     fn nic_decap(&self) -> Option<u32> {
+        None
+    }
+
+    fn trap_mark(&self) -> Option<u32> {
         None
     }
 }
@@ -631,15 +650,25 @@ fn process_burst<Buf: PacketBufferMut + RxContext>(
     packets.clear();
     // Each packet is parsed in its slot rather than built and then moved into one.
     for buffer in burst {
-        let decapped = buffer.nic_decap();
+        let (decapped, mark) = (buffer.nic_decap(), buffer.trap_mark());
         match Packet::parse_into(packets, buffer) {
             Ok(packet) => {
                 packet.meta_mut().iif = Some(rx_if);
-                if let Some(mark) = decapped {
+                if let Some(meta) = decapped {
                     // The NIC took the outer headers off: the frame is the inner one, of this VNI.
-                    match net::vxlan::Vni::new_checked(mark) {
-                        Ok(vni) => packet.meta_mut().set_nic_decap(vni),
-                        Err(_) => packet.done(DoneReason::VxlanDecapFailure),
+                    match nic_offload::mlx5::vni_of_meta(meta)
+                        .and_then(|vni| net::vxlan::Vni::new_checked(vni).ok())
+                    {
+                        Some(vni) => packet.meta_mut().set_nic_decap(vni),
+                        None => packet.done(DoneReason::VxlanDecapFailure),
+                    }
+                }
+                if let Some(bits) = mark {
+                    // The configuration generation it was classified under, and where the NIC
+                    // left it (T7: a MARK outside the layout is a lowering bug, counted).
+                    match net::packet::Mark::from_bits(bits) {
+                        Ok(mark) => packet.meta_mut().set_mark(Some(mark)),
+                        Err(_) => packet.done(DoneReason::TrapDecode),
                     }
                 }
             }

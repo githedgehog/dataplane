@@ -386,3 +386,83 @@ fn a_refused_ingress_rule_or_meter_stays_in_software_alone() {
         }
     );
 }
+
+/// A decapsulating plan for `sources`, with no NIC rules: each VPC's generation is its catch-all.
+fn decapsulating(sources: &[u32]) -> Plan {
+    let vteps = sources
+        .iter()
+        .map(|&v| (vni(v), Ipv4Addr::new(192, 0, 2, 1)))
+        .collect();
+    Plan::new(
+        &Program::default(),
+        &vteps,
+        &TemplateAction::Queue(RxQueueIndex(0)),
+        true,
+    )
+    .unwrap()
+}
+
+/// The trap rule goes in with the stamp the port has, before anything jumps to it, and a flip
+/// rewrites it in place: one update, no rule added or removed.
+#[test]
+fn the_trap_rule_is_installed_once_and_restamped_in_place() {
+    let fixture = Fixture::new();
+    let flows = fixture.flows();
+    let first = Stamp::new(Bank::A, 1);
+    let mut port = Port::new(&flows).stamping(first);
+    port.reconcile(&decapsulating(&[100, 200]), port.observe())
+        .unwrap();
+    assert!(port.trap.is_some(), "a decapsulating plan stamps");
+    assert_eq!(port.stamp(), first);
+    let (rules, creates, updates) = (
+        fixture.live_rules(),
+        fixture.calls("create"),
+        fixture.calls("update"),
+    );
+    let next = Stamp::new(Bank::B, 2);
+    port.restamp(next).unwrap();
+    assert_eq!(port.stamp(), next);
+    assert_eq!(fixture.calls("update"), updates + 1);
+    assert_eq!(fixture.calls("create"), creates);
+    assert_eq!(fixture.live_rules(), rules);
+    // A later plan keeps the rule, and its stamp.
+    port.reconcile(&decapsulating(&[100]), port.observe())
+        .unwrap();
+    assert!(port.trap.is_some());
+    assert_eq!(port.stamp(), next);
+}
+
+/// Before anything is installed, a restamp is only remembered: the rule goes in with it.
+#[test]
+fn a_restamp_before_the_trap_is_installed_is_what_it_installs_with() {
+    let fixture = Fixture::new();
+    let flows = fixture.flows();
+    let mut port = Port::new(&flows);
+    let stamp = Stamp::new(Bank::B, 6);
+    port.restamp(stamp).unwrap();
+    assert_eq!(fixture.calls("update"), 0);
+    port.reconcile(&decapsulating(&[100]), port.observe())
+        .unwrap();
+    assert!(port.trap.is_some());
+    assert_eq!(port.stamp(), stamp);
+}
+
+/// A trap rule left stamping the old generation would have its packets dropped as stale once that
+/// generation retires: a failed restamp, of any kind, loses the port, root first.
+#[test]
+fn a_failed_restamp_loses_the_port() {
+    for failure in [Outcome::Reject, Outcome::PushError, Outcome::PullError] {
+        let fixture = Fixture::new();
+        let flows = fixture.flows();
+        let mut port = Port::new(&flows);
+        port.reconcile(&decapsulating(&[100]), port.observe())
+            .unwrap();
+        fixture.fail("update", failure);
+        assert!(port.restamp(Stamp::new(Bank::B, 2)).is_err(), "{failure:?}");
+        assert!(port.poisoned(), "{failure:?}");
+        assert!(
+            port.root.is_none(),
+            "{failure:?}: the root still reaches the trap"
+        );
+    }
+}

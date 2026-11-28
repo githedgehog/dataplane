@@ -21,10 +21,19 @@
 //! Switch rules match the destination VTEP so transit VXLAN stays in the underlay.
 //!
 //! With decapsulation ([`Plan::new`]'s `decap`), every VPC with a VTEP gets a switch rule, which
-//! marks its packets with the VNI (MARK survives jumps), and whatever its generation delivers
-//! arrives decapsulated: software reads the VNI from the MARK. A VPC with no NIC rules gets a
-//! generation of one catch-all ([`Group::Exit`]). VXLAN with an outer TTL of 0 or a multicast
-//! source, and VPCs the switch does not know, still arrive encapsulated, for software to judge.
+//! sets its packets' META to the VNI ([`META_VXLAN`]; META survives jumps), and whatever its
+//! generation delivers arrives decapsulated: software reads the VNI from META. A VPC with no NIC
+//! rules gets a generation of one catch-all ([`Group::Exit`]). VXLAN with an outer TTL of 0 or a
+//! multicast source, and VPCs the switch does not know, still arrive encapsulated, for software
+//! to judge.
+//!
+//! **Traps** (`notes/match-action-dag/TRAP-RESUME.md`; slice 1 step 5a): with decapsulation,
+//! everything the switch passes on to software goes through the trap group ([`TRAP`]), whose one
+//! rule writes MARK: the configuration generation the packet was classified under (its stamp)
+//! and where it left the NIC (the root, for now: software runs every stage). The rule is
+//! restamped in place when the generation flips ([`Port::restamp`]). Nothing else in the NIC is
+//! versioned by generation yet, so one rule does what a selector and per-bank trap rules will
+//! once the NIC's own tables are (slice 1 step 5c).
 //! [`Plan`] stores named [`Group`]s, numbered at installation. Only IPv4 underlay is supported.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -63,6 +72,23 @@ pub const PARSER: Parser = Parser {
 
 /// The switch group's number; the root is group 0.
 pub(crate) const SWITCH: FlowGroup = FlowGroup(1);
+
+/// The trap group's number: with decapsulation, what the switch passes on goes through it.
+pub(crate) const TRAP: FlowGroup = FlowGroup(2);
+
+/// The META of a packet the NIC decapsulated: the discriminant kind VXLAN VNI in the top byte, the
+/// VNI below (`notes/match-action-dag/TRAP-RESUME.md` §3). Never zero, so it always arrives.
+pub const META_VXLAN: u32 = 0x01 << 24;
+
+/// The VNI in a packet's META, if it is [`META_VXLAN`]'s kind.
+#[must_use]
+pub const fn vni_of_meta(meta: u32) -> Option<u32> {
+    if meta >> 24 == META_VXLAN >> 24 {
+        Some(meta & 0x00ff_ffff)
+    } else {
+        None
+    }
+}
 
 /// Failures programming the NIC; the port then falls back to software alone.
 #[derive(Debug, thiserror::Error)]
@@ -578,6 +604,8 @@ pub enum Group {
     Color(usize),
     /// A source VPC with no NIC rules, decapsulated and delivered: its catch-all alone.
     Exit(Vni),
+    /// With decapsulation: where everything the switch passes on is stamped, and delivered.
+    Trap,
 }
 
 /// VXLAN the switch delivers encapsulated, ahead of the VPCs' switch rules, for software to drop.
@@ -613,6 +641,8 @@ pub enum Role {
     Color(usize, Color),
     /// An exception the switch delivers encapsulated.
     Exception(Exception),
+    /// The trap rule: stamps, and delivers.
+    Trap,
 }
 
 /// A per-rule argument, by reference into the plan.
@@ -624,6 +654,11 @@ pub enum Arg {
     Jump(Group),
     /// Mark with this value.
     Mark(u32),
+    /// Mark with the stamp of the generation the port's hardware classifies under now: the trap
+    /// rule's, resolved when it is installed (and rewritten in place at each flip).
+    Stamp,
+    /// Set META to this value.
+    Meta(u32),
 }
 
 /// A rule of a [`PlannedTable`].
@@ -736,8 +771,10 @@ pub struct Plan {
     pub fixed: Vec<PlannedTable>,
     /// The source VPCs' generations.
     pub vpcs: BTreeMap<Vni, PlannedVpc>,
-    /// Whether what the NIC delivers of a switched VPC arrives decapsulated, marked with its VNI.
+    /// Whether what the NIC delivers of a switched VPC arrives decapsulated, with its VNI in META.
     pub decap: bool,
+    /// With decapsulation, the trap table ([`Group::Trap`]), in which the switch's deliveries end.
+    pub trap: Option<PlannedTable>,
 }
 
 /// Pattern templates every plan has, by index.
@@ -757,13 +794,52 @@ const PASS: usize = 4;
 const DISCARD: usize = 5;
 const COUNT_JUMP: usize = 6;
 const COUNT_POLICE: usize = 7;
-/// Mark with the VNI and jump to the generation: a switch rule, with decapsulation.
+/// Set META to the VNI and jump to the generation: a switch rule, with decapsulation.
 const SWITCH_TO: usize = 8;
-/// Deliver as it is, encapsulated: the switch's catch-all and exceptions, with decapsulation.
+/// Deliver as it is, encapsulated: the switch's catch-all and exceptions, with decapsulation
+/// (through the trap group, to be stamped).
 const RAW: usize = 9;
+/// Stamp, and deliver: the trap rule.
+const STAMP: usize = 10;
 
-/// The largest VNI a MARK carries: the largest per-rule mark that arrives as itself.
-pub const MAX_MARKED_VNI: u32 = dpdk::flow::template::MAX_MARK;
+/// The actions templates every plan has, in the order of their indices above.
+fn actions_templates(fate: &TemplateAction, decap: bool) -> Vec<Vec<TemplateAction>> {
+    vec![
+        vec![TemplateAction::Jump(SWITCH)],
+        vec![TemplateAction::JumpPerRule],
+        vec![TemplateAction::Meter, TemplateAction::JumpPerRule],
+        // With decapsulation, deliveries go through the trap group to be stamped.
+        if decap {
+            vec![TemplateAction::VxlanDecap, TemplateAction::Jump(TRAP)]
+        } else {
+            vec![fate.clone()]
+        },
+        // mlx5 orders a decapsulation before the count.
+        if decap {
+            vec![
+                TemplateAction::VxlanDecap,
+                TemplateAction::Count,
+                TemplateAction::Jump(TRAP),
+            ]
+        } else {
+            vec![TemplateAction::Count, fate.clone()]
+        },
+        vec![TemplateAction::Count, TemplateAction::Drop],
+        vec![TemplateAction::Count, TemplateAction::JumpPerRule],
+        vec![
+            TemplateAction::Count,
+            TemplateAction::Meter,
+            TemplateAction::JumpPerRule,
+        ],
+        vec![TemplateAction::MetaPerRule, TemplateAction::JumpPerRule],
+        if decap {
+            vec![TemplateAction::Jump(TRAP)]
+        } else {
+            vec![fate.clone()]
+        },
+        vec![TemplateAction::MarkPerRule, fate.clone()],
+    ]
+}
 
 /// VXLAN with an outer TTL of zero: software drops it, so it must see the outer header.
 fn ttl_zero_pattern() -> Pattern<Complete> {
@@ -1001,39 +1077,12 @@ impl Plan {
                 ttl_zero_pattern(),
                 multicast_source_pattern(),
             ],
-            actions: vec![
-                vec![TemplateAction::Jump(SWITCH)],
-                vec![TemplateAction::JumpPerRule],
-                vec![TemplateAction::Meter, TemplateAction::JumpPerRule],
-                if decap {
-                    vec![TemplateAction::VxlanDecap, fate.clone()]
-                } else {
-                    vec![fate.clone()]
-                },
-                // mlx5 orders a decapsulation before the count.
-                if decap {
-                    vec![
-                        TemplateAction::VxlanDecap,
-                        TemplateAction::Count,
-                        fate.clone(),
-                    ]
-                } else {
-                    vec![TemplateAction::Count, fate.clone()]
-                },
-                vec![TemplateAction::Count, TemplateAction::Drop],
-                vec![TemplateAction::Count, TemplateAction::JumpPerRule],
-                vec![
-                    TemplateAction::Count,
-                    TemplateAction::Meter,
-                    TemplateAction::JumpPerRule,
-                ],
-                vec![TemplateAction::MarkPerRule, TemplateAction::JumpPerRule],
-                vec![fate.clone()],
-            ],
+            actions: actions_templates(fate, decap),
             meters: Vec::new(),
             fixed: Vec::new(),
             vpcs: BTreeMap::new(),
             decap,
+            trap: None,
         };
         for (index, meter) in program.meters.iter().enumerate() {
             plan.meters.push(PlannedMeter {
@@ -1064,12 +1113,7 @@ impl Plan {
             .chain(limits.keys())
             .copied()
             .collect();
-        // A VPC whose VNI no MARK carries stays in software: its packets could not be told apart
-        // once decapsulated.
-        let vnis: BTreeSet<Vni> = vnis
-            .into_iter()
-            .filter(|vni| !decap || vni.as_u32() <= MAX_MARKED_VNI)
-            .collect();
+        // Every VNI fits META (unlike MARK, which lost the top of the range to the PMD).
         for vni in vnis {
             let vtep = *vteps.get(&vni).ok_or(Error::NoVtep(vni))?;
             let vpc = plan.vpc(
@@ -1084,13 +1128,22 @@ impl Plan {
         }
         if decap {
             for (&vni, &vtep) in vteps {
-                if vni.as_u32() <= MAX_MARKED_VNI && !plan.vpcs.contains_key(&vni) {
-                    plan.vpcs.insert(vni, exit(vni, vtep));
-                }
+                plan.vpcs.entry(vni).or_insert_with(|| exit(vni, vtep));
             }
         }
         if !plan.vpcs.is_empty() {
             plan.fixed = plan.fixed_tables();
+            plan.trap = decap.then(|| {
+                single(
+                    Group::Trap,
+                    0,
+                    ANY,
+                    STAMP,
+                    any_pattern(),
+                    vec![Arg::Stamp],
+                    Role::Trap,
+                )
+            });
         }
         Ok(plan)
     }
@@ -1337,7 +1390,7 @@ impl Plan {
                 pattern: switch_pattern(Some((vni, vpc.spec.vtep))),
                 actions: 0,
                 args: if self.decap {
-                    vec![Arg::Mark(vni.as_u32()), Arg::Jump(vpc.entry)]
+                    vec![Arg::Meta(META_VXLAN | vni.as_u32()), Arg::Jump(vpc.entry)]
                 } else {
                     vec![Arg::Jump(vpc.entry)]
                 },
@@ -1401,6 +1454,7 @@ impl Plan {
     pub fn tables(&self) -> impl Iterator<Item = &PlannedTable> {
         self.fixed
             .iter()
+            .chain(&self.trap)
             .chain(self.vpcs.values().flat_map(|vpc| &vpc.tables))
             .chain(self.meters.iter().filter_map(|meter| meter.colors.as_ref()))
     }
@@ -1409,6 +1463,7 @@ impl Plan {
     pub fn tables_mut(&mut self) -> impl Iterator<Item = &mut PlannedTable> {
         self.fixed
             .iter_mut()
+            .chain(&mut self.trap)
             .chain(self.vpcs.values_mut().flat_map(|vpc| &mut vpc.tables))
             .chain(
                 self.meters

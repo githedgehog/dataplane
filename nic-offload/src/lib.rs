@@ -91,8 +91,62 @@ pub struct Policy {
     /// The VTEP each VPC's VXLAN is addressed to.
     pub vteps: Arc<dyn Vteps>,
     /// Whether the NIC decapsulates the VXLAN of every VPC with a VTEP, delivering the inner frame
-    /// marked with the VNI (MARK). Fixed for the life of a port: the switch is never rebuilt.
+    /// with the VNI in META. Fixed for the life of a port: the switch is never rebuilt.
     pub decap: bool,
+    /// With decapsulation, the stamp the trap rule writes, as the configuration publisher wants
+    /// it; `None`: stamped with generation 1 for good (no publisher flips).
+    pub stamping: Option<Arc<Stamping>>,
+}
+
+/// The stamp every port's trap rule writes: what the configuration publisher wants
+/// ([`Stamping::request`], at each flip), and what each port has confirmed. A flip is done only
+/// once every port stamps the new generation: before that, an idle worker could acknowledge it
+/// and the previous generation retire while a port still stamps packets with it.
+#[derive(Debug)]
+pub struct Stamping {
+    wanted: concurrency::sync::atomic::AtomicU8,
+    ports: concurrency::sync::Mutex<Vec<Arc<concurrency::sync::atomic::AtomicU8>>>,
+}
+
+impl Stamping {
+    /// Stamping with `stamp`, no port yet.
+    #[must_use]
+    pub fn new(stamp: net::packet::Stamp) -> Self {
+        Stamping {
+            wanted: concurrency::sync::atomic::AtomicU8::new(stamp.to_bits()),
+            ports: concurrency::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Have every port stamp with `stamp`; whether every port does now. Call again until it
+    /// does: ports confirm from their own threads.
+    pub fn request(&self, stamp: net::packet::Stamp) -> bool {
+        use concurrency::sync::atomic::Ordering;
+        self.wanted.store(stamp.to_bits(), Ordering::Release);
+        self.ports
+            .lock()
+            .iter()
+            .all(|applied| applied.load(Ordering::Acquire) == stamp.to_bits())
+    }
+
+    /// What ports should stamp with now.
+    #[must_use]
+    pub fn wanted(&self) -> net::packet::Stamp {
+        use concurrency::sync::atomic::Ordering;
+        net::packet::Stamp::from_bits(self.wanted.load(Ordering::Acquire))
+            .unwrap_or_else(|| unreachable!("only stamps are stored"))
+    }
+
+    /// A port's confirmation: it stores each stamp once its trap rule writes it (or once nothing
+    /// it holds is reachable). Starts at what is wanted now: a port that has installed nothing
+    /// stamps nothing.
+    pub(crate) fn register(&self) -> Arc<concurrency::sync::atomic::AtomicU8> {
+        let applied = Arc::new(concurrency::sync::atomic::AtomicU8::new(
+            self.wanted().to_bits(),
+        ));
+        self.ports.lock().push(Arc::clone(&applied));
+        applied
+    }
 }
 
 /// Where software takes in each VPC's VXLAN: it decapsulates only VXLAN addressed to the VTEP of

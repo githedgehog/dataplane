@@ -657,16 +657,25 @@ fn run_dpdk_driver(
     use crate::packet_processor::admission::{self as frame, Publication, Wakers};
     // The admission publisher, if management hands it generations: owned by this thread, which
     // owns the workers' scope below, so every worker's reader borrows it and none outlives it.
-    // Nothing is stamped yet (no NIC trap), so workers acknowledge in software mode, an idle
-    // one after a grace of empty polls.
-    let generations = admission.map(|_| {
-        dag::generation::Generations::new(ingredients.admission_tables()).with_policy(
-            dag::generation::Policy {
-                software: true,
+    // The NIC's trap rule stamps every packet the switch passes on (`nic_offload`), and each flip
+    // waits for every port to stamp the new generation; workers acknowledge on stamps, an idle
+    // one after a grace of empty polls. Known gap: a busy worker whose ports stamp nothing (no
+    // offload on them) never acknowledges; that needs acknowledgement per queue.
+    let (generations, stamping) = if admission.is_some() {
+        let generations = dag::generation::Generations::new(ingredients.admission_tables())
+            .with_policy(dag::generation::Policy {
+                software: false,
                 idle_grace: 64,
-            },
+            });
+        let stamping = Arc::new(nic_offload::Stamping::new(generations.selector().stamp()));
+        let hardware = Arc::clone(&stamping);
+        (
+            Some(generations.with_hardware(move |stamp| hardware.request(stamp))),
+            Some(stamping),
         )
-    });
+    } else {
+        (None, None)
+    };
     let wakers = Wakers::default();
     let publication = generations.as_ref().map(|g| Publication {
         readers: g.factory(),
@@ -711,7 +720,10 @@ fn run_dpdk_driver(
         }
     }
 
-    let offload = ingredients.offload_policy();
+    let offload = nic_offload::Policy {
+        stamping,
+        ..ingredients.offload_policy()
+    };
     // Queue handles borrow the ports, so workers must join before port shutdown.
     concurrency::thread::scope(|scope| {
         info!("Using driver DPDK...");
