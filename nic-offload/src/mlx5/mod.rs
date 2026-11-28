@@ -52,6 +52,7 @@ use dpdk::flow::{
     PortRange as FlowPortRange, Priority, TcpMatch, UdpMatch, VxlanMatch,
 };
 use lpm::prefix::PortRange;
+use net::packet::Bank;
 use net::vxlan::Vni;
 use rate_limit::{Billing, Unit};
 
@@ -81,6 +82,23 @@ pub(crate) const TRAP: FlowGroup = FlowGroup(2);
 
 /// The trap group of what VPC generations deliver decapsulated.
 pub(crate) const TRAP_DECAPPED: FlowGroup = FlowGroup(3);
+
+/// With decapsulation, the selector's group: between the root and the switch, its one rule writes
+/// the bank packets are classified under into TAG register 0, and is rewritten in place to flip
+/// (`notes/match-action-dag/GENERATIONS.md` §3, the train track).
+pub(crate) const SELECTOR: FlowGroup = FlowGroup(4);
+
+/// The TAG register the selector writes the bank into.
+pub(crate) const BANK_TAG: u8 = 0;
+
+/// The value of [`BANK_TAG`] for `bank`: never zero, which a register never written holds.
+#[must_use]
+pub const fn bank_tag(bank: Bank) -> u32 {
+    match bank {
+        Bank::A => 1,
+        Bank::B => 2,
+    }
+}
 
 /// The META of a packet the NIC decapsulated: the discriminant kind VXLAN VNI in the top byte, the
 /// VNI below (`notes/match-action-dag/TRAP-RESUME.md` §3). Never zero, so it always arrives.
@@ -615,6 +633,8 @@ pub enum Group {
     /// With decapsulation: where what VPC generations deliver decapsulated is stamped, and
     /// delivered.
     TrapDecapped,
+    /// With decapsulation: the selector, which writes the bank.
+    Selector,
 }
 
 /// VXLAN the switch delivers encapsulated, ahead of the VPCs' switch rules, for software to drop.
@@ -650,8 +670,11 @@ pub enum Role {
     Color(usize, Color),
     /// An exception the switch delivers encapsulated.
     Exception(Exception),
-    /// A trap rule: stamps, and delivers ([`Group::Trap`] or [`Group::TrapDecapped`]).
-    Trap(Group),
+    /// A trap rule of a bank: stamps with that bank's generation, and delivers ([`Group::Trap`]
+    /// or [`Group::TrapDecapped`]).
+    Trap(Group, Bank),
+    /// The selector rule.
+    Selector,
 }
 
 /// A per-rule argument, by reference into the plan.
@@ -669,6 +692,9 @@ pub enum Arg {
     Stamp(Option<std::num::NonZero<u8>>),
     /// Set META to this value.
     Meta(u32),
+    /// Write the bank hardware classifies under now into [`BANK_TAG`]: the selector rule's,
+    /// resolved when it is installed (and rewritten in place at each flip).
+    Select,
 }
 
 /// A rule of a [`PlannedTable`].
@@ -784,8 +810,12 @@ pub struct Plan {
     /// Whether what the NIC delivers of a switched VPC arrives decapsulated, with its VNI in META.
     pub decap: bool,
     /// With decapsulation, the trap tables ([`Group::Trap`], [`Group::TrapDecapped`]), in which
-    /// the switch's deliveries end.
+    /// the switch's deliveries end: one rule per bank.
     pub traps: Vec<PlannedTable>,
+    /// With decapsulation, the selector table ([`Group::Selector`]).
+    pub selector: Option<PlannedTable>,
+    /// The bank this plan's switch rules are of ([`Plan::in_bank`]).
+    pub bank: Bank,
 }
 
 /// Pattern templates every plan has, by index.
@@ -795,6 +825,8 @@ const COLOR: usize = 2;
 const SWITCHED: usize = 3;
 const TTL_ZERO: usize = 4;
 const MULTICAST_SOURCE: usize = 5;
+/// Any packet, of a bank (`TAG[0]`): a trap rule's.
+const TRAPPED: usize = 6;
 
 /// Actions templates every plan has, by index.
 const TO_SWITCH: usize = 0;
@@ -815,11 +847,14 @@ const STAMP: usize = 10;
 /// Deliver what an ingress rule the NIC does not enforce passes ([`IngressVerdict::Pass`]):
 /// decapsulated, but trapped at the root, since its ingress rule has not run.
 const PASS_UNENFORCED: usize = 11;
+/// Write the bank, and go on to the switch: the selector rule.
+const SELECT: usize = 12;
 
 /// The actions templates every plan has, in the order of their indices above.
 fn actions_templates(fate: &TemplateAction, decap: bool) -> Vec<Vec<TemplateAction>> {
     vec![
-        vec![TemplateAction::Jump(SWITCH)],
+        // With decapsulation, the root goes through the selector.
+        vec![TemplateAction::Jump(if decap { SELECTOR } else { SWITCH })],
         vec![TemplateAction::JumpPerRule],
         vec![TemplateAction::Meter, TemplateAction::JumpPerRule],
         // With decapsulation, deliveries go through the trap group to be stamped.
@@ -860,6 +895,10 @@ fn actions_templates(fate: &TemplateAction, decap: bool) -> Vec<Vec<TemplateActi
         } else {
             vec![fate.clone()]
         },
+        vec![
+            TemplateAction::TagPerRule(BANK_TAG),
+            TemplateAction::Jump(SWITCH),
+        ],
     ]
 }
 
@@ -898,17 +937,27 @@ fn any_pattern() -> Pattern<Complete> {
 
 /// The pattern of a switch rule: VXLAN with the VPC's VNI, to its VTEP (placeholders for the
 /// template).
-fn switch_pattern(vpc: Option<(Vni, Ipv4Addr)>) -> Pattern<Complete> {
+/// With decapsulation, of a bank (`bank`: `TAG[0]`'s value).
+fn switch_pattern(vpc: Option<(Vni, Ipv4Addr)>, bank: Option<u32>) -> Pattern<Complete> {
     let (vni, vtep) = vpc.unwrap_or_else(|| {
         let vni = Vni::new_checked(Vni::MIN).unwrap_or_else(|_| unreachable!());
         (vni, Ipv4Addr::UNSPECIFIED)
     });
-    Pattern::new()
+    let pattern = Pattern::new()
         .eth(EthMatch::default())
         .ipv4(Ipv4Match::default().dst(Ipv4Prefix::host(vtep)))
         .udp(UdpMatch::default().dst(VXLAN_PORT))
         .vxlan(VxlanMatch::default().vni(vni))
-        .complete()
+        .complete();
+    match bank {
+        Some(bank) => pattern.tag(BANK_TAG, bank),
+        None => pattern,
+    }
+}
+
+/// Any packet of `bank` (`TAG[0]`'s value): a trap rule's.
+fn trap_pattern(bank: u32) -> Pattern<Complete> {
+    any_pattern().tag(BANK_TAG, bank)
 }
 
 /// The rules letting `passes` through for source VPC `vni`: any source, any protocol.
@@ -1095,9 +1144,10 @@ impl Plan {
                 root_pattern(),
                 any_pattern(),
                 Pattern::meter_color(Color::Green).complete(),
-                switch_pattern(None),
+                switch_pattern(None, decap.then_some(0)),
                 ttl_zero_pattern(),
                 multicast_source_pattern(),
+                trap_pattern(0),
             ],
             actions: actions_templates(fate, decap),
             meters: Vec::new(),
@@ -1105,6 +1155,8 @@ impl Plan {
             vpcs: BTreeMap::new(),
             decap,
             traps: Vec::new(),
+            selector: None,
+            bank: Bank::A,
         };
         for (index, meter) in program.meters.iter().enumerate() {
             plan.meters.push(PlannedMeter {
@@ -1156,20 +1208,7 @@ impl Plan {
         if !plan.vpcs.is_empty() {
             plan.fixed = plan.fixed_tables();
             if decap {
-                plan.traps = [Group::Trap, Group::TrapDecapped]
-                    .into_iter()
-                    .map(|group| {
-                        single(
-                            group,
-                            0,
-                            ANY,
-                            STAMP,
-                            any_pattern(),
-                            vec![Arg::Stamp(None)],
-                            Role::Trap(group),
-                        )
-                    })
-                    .collect();
+                plan.traps_and_selector();
             }
         }
         Ok(plan)
@@ -1415,7 +1454,10 @@ impl Plan {
             .vpcs
             .iter()
             .map(|(&vni, vpc)| PlannedRule {
-                pattern: switch_pattern(Some((vni, vpc.spec.vtep))),
+                pattern: switch_pattern(
+                    Some((vni, vpc.spec.vtep)),
+                    self.decap.then_some(bank_tag(self.bank)),
+                ),
                 actions: 0,
                 args: if self.decap {
                     vec![Arg::Meta(META_VXLAN | vni.as_u32()), Arg::Jump(vpc.entry)]
@@ -1494,11 +1536,54 @@ impl Plan {
         self
     }
 
+    /// With decapsulation: the trap tables, a rule per bank in each, and the selector.
+    fn traps_and_selector(&mut self) {
+        self.traps = [Group::Trap, Group::TrapDecapped]
+            .into_iter()
+            .map(|group| PlannedTable {
+                group,
+                priority: Priority(0),
+                capacity: 2,
+                pattern: TRAPPED,
+                actions: vec![STAMP],
+                rules: [Bank::A, Bank::B]
+                    .into_iter()
+                    .map(|bank| PlannedRule {
+                        pattern: trap_pattern(bank_tag(bank)),
+                        actions: 0,
+                        args: vec![Arg::Stamp(None)],
+                        role: Role::Trap(group, bank),
+                    })
+                    .collect(),
+            })
+            .collect();
+        self.selector = Some(single(
+            Group::Selector,
+            0,
+            ANY,
+            SELECT,
+            any_pattern(),
+            vec![Arg::Select],
+            Role::Selector,
+        ));
+    }
+
+    /// The same plan, with its switch rules of `bank`: they match its value of `TAG[0]`.
+    #[must_use]
+    pub fn in_bank(mut self, bank: Bank) -> Plan {
+        self.bank = bank;
+        if !self.vpcs.is_empty() {
+            self.fixed = self.fixed_tables();
+        }
+        self
+    }
+
     /// Every table of the plan.
     pub fn tables(&self) -> impl Iterator<Item = &PlannedTable> {
         self.fixed
             .iter()
             .chain(&self.traps)
+            .chain(&self.selector)
             .chain(self.vpcs.values().flat_map(|vpc| &vpc.tables))
             .chain(self.meters.iter().filter_map(|meter| meter.colors.as_ref()))
     }
@@ -1508,6 +1593,7 @@ impl Plan {
         self.fixed
             .iter_mut()
             .chain(&mut self.traps)
+            .chain(&mut self.selector)
             .chain(self.vpcs.values_mut().flat_map(|vpc| &mut vpc.tables))
             .chain(
                 self.meters

@@ -84,6 +84,25 @@ pub(crate) struct AdmissionTables {
     pub(crate) peers: Peers,
 }
 
+impl AdmissionTables {
+    /// What NIC offload compiles of this generation: its policy, with no rate limits for a
+    /// meter that has none.
+    pub(crate) fn inputs(&self) -> nic_offload::Inputs {
+        nic_offload::Inputs {
+            acls: Arc::clone(&self.acl),
+            routing: Arc::clone(&self.flow_filter),
+            rate_limits: self
+                .accepted
+                .clone()
+                .unwrap_or_else(|| Arc::new(RateLimits::empty())),
+            ingress: self
+                .arrived
+                .clone()
+                .unwrap_or_else(|| Arc::new(RateLimits::empty())),
+        }
+    }
+}
+
 /// The admission slice's trap targets: static ids (TRAP-RESUME §4), each where hardware may
 /// leave a packet to software, and each named for the node it enters at, which has not executed.
 /// No trap is the root: the arrived meter.

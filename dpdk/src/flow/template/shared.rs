@@ -105,6 +105,8 @@ pub enum SharedArg<'t, D: Domain> {
     Mark(u32),
     /// The value for a [`TemplateAction::MetaPerRule`](super::TemplateAction::MetaPerRule).
     Meta(u32),
+    /// The value for a [`TemplateAction::TagPerRule`](super::TemplateAction::TagPerRule).
+    Tag(u32),
 }
 
 impl<D: Domain> Clone for SharedArg<'_, D> {
@@ -114,6 +116,7 @@ impl<D: Domain> Clone for SharedArg<'_, D> {
             SharedArg::Jump(group) => SharedArg::Jump(*group),
             SharedArg::Mark(id) => SharedArg::Mark(*id),
             SharedArg::Meta(value) => SharedArg::Meta(*value),
+            SharedArg::Tag(value) => SharedArg::Tag(*value),
         }
     }
 }
@@ -133,6 +136,7 @@ fn borrowed<'a, 't, D: Domain>(
             SharedArg::Jump(group) => RuleArg::Jump(*group),
             SharedArg::Mark(id) => RuleArg::Mark(*id),
             SharedArg::Meta(value) => RuleArg::Meta(*value),
+            SharedArg::Tag(value) => RuleArg::Tag(*value),
         })
         .collect();
     (args, meters)

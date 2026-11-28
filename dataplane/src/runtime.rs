@@ -688,20 +688,28 @@ fn run_dpdk_driver(
     use crate::packet_processor::admission::{self as frame, Publication, Wakers};
     // The admission publisher, if management hands it generations: owned by this thread, which
     // owns the workers' scope below, so every worker's reader borrows it and none outlives it.
-    // The NIC's trap rule stamps every packet the switch passes on (`nic_offload`), and each flip
-    // waits for every port to stamp the new generation; workers acknowledge on stamps, an idle
-    // one after a grace of empty polls. Known gap: a busy worker whose ports stamp nothing (no
-    // offload on them) never acknowledges; that needs acknowledgement per queue.
+    // Each flip has every port's NIC classify under the new generation first: compile its policy
+    // into the generation's bank, stamp that bank with it, turn the selector (`nic_offload`).
+    // Workers acknowledge per queue, on stamps (`dag::generation::Drain`).
     let (generations, stamping) = if admission.is_some() {
-        let generations = dag::generation::Generations::new(ingredients.admission_tables())
-            .with_policy(dag::generation::Policy {
+        let tables = ingredients.admission_tables();
+        let inputs = tables.inputs();
+        let generations =
+            dag::generation::Generations::new(tables).with_policy(dag::generation::Policy {
                 software: false,
                 idle_grace: 64,
             });
-        let stamping = Arc::new(nic_offload::Stamping::new(generations.selector().stamp()));
+        let stamping = Arc::new(nic_offload::Stamping::new(
+            generations.selector().stamp(),
+            inputs,
+        ));
         let hardware = Arc::clone(&stamping);
         (
-            Some(generations.with_hardware(move |stamp| hardware.request(stamp))),
+            Some(generations.with_hardware(
+                move |snapshot: &dag::generation::Snapshot<frame::AdmissionTables>| {
+                    hardware.request(snapshot.stamp(), snapshot.tables().inputs())
+                },
+            )),
             Some(stamping),
         )
     } else {

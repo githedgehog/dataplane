@@ -79,6 +79,8 @@ struct State {
     trap: Option<std::num::NonZero<u8>>,
     meta: Option<u32>,
     decapped: bool,
+    /// The TAG registers rules wrote (only the bank's, so far).
+    tags: [u32; 1],
 }
 
 impl Plan {
@@ -116,6 +118,7 @@ impl Plan {
                 stamped: false,
                 trap: None,
                 meta: None,
+                tags: [0],
                 decapped: false,
             };
             for outcome in model.group(&view, Group::Root, start, 0)? {
@@ -162,7 +165,10 @@ impl Walk<'_> {
                     if self.refused.contains(&rule.role) {
                         continue;
                     }
-                    if rule.pattern.matches(frame, state.color)? {
+                    if rule
+                        .pattern
+                        .matches_tagged(frame, state.color, &state.tags)?
+                    {
                         outcomes.extend(self.actions(frame, table, rule, state.clone(), depth)?);
                     }
                 }
@@ -205,26 +211,12 @@ impl Walk<'_> {
                         s.mark = Some(*id);
                     }
                 }
-                TemplateAction::MarkPerRule => match args.next() {
-                    Some(&Arg::Mark(id)) => {
-                        for s in &mut states {
-                            s.mark = Some(id);
-                        }
-                    }
-                    Some(&Arg::Stamp(node)) => {
-                        for s in &mut states {
-                            s.stamped = true;
-                            s.trap = node;
-                        }
-                    }
-                    _ => return Err(ModelError::Arguments),
-                },
-                TemplateAction::MetaPerRule => {
-                    let Some(&Arg::Meta(value)) = args.next() else {
-                        return Err(ModelError::Arguments);
-                    };
+                TemplateAction::MarkPerRule
+                | TemplateAction::TagPerRule(_)
+                | TemplateAction::MetaPerRule => {
+                    let write = self.write(action, args.next())?;
                     for s in &mut states {
-                        s.meta = Some(value);
+                        write(s);
                     }
                 }
                 // No later pattern of the same rule looks at the frame: only its fate follows.
@@ -255,6 +247,9 @@ impl Walk<'_> {
                 }
                 TemplateAction::Jump(group) if *group == crate::mlx5::TRAP => {
                     return self.jump(frame, Group::Trap, states, depth);
+                }
+                TemplateAction::Jump(group) if *group == crate::mlx5::SELECTOR => {
+                    return self.jump(frame, Group::Selector, states, depth);
                 }
                 TemplateAction::Jump(group) if *group == crate::mlx5::TRAP_DECAPPED => {
                     return self.jump(frame, Group::TrapDecapped, states, depth);
@@ -287,6 +282,55 @@ impl Walk<'_> {
             .into_iter()
             .map(|s| s.end(Verdict::Missed(table.group)))
             .collect())
+    }
+
+    /// What a per-rule metadata action writes, given its rule's argument.
+    fn write(
+        &self,
+        action: &TemplateAction,
+        arg: Option<&Arg>,
+    ) -> Result<impl Fn(&mut State) + use<>, ModelError> {
+        // (mark, stamped with a node, META, TAG register and value)
+        type Write = (
+            Option<u32>,
+            Option<Option<std::num::NonZero<u8>>>,
+            Option<u32>,
+            Option<(usize, u32)>,
+        );
+        let write: Write = match (action, arg) {
+            (TemplateAction::MarkPerRule, Some(&Arg::Mark(id))) => (Some(id), None, None, None),
+            (TemplateAction::MarkPerRule, Some(&Arg::Stamp(node))) => {
+                (None, Some(node), None, None)
+            }
+            (TemplateAction::MetaPerRule, Some(&Arg::Meta(value))) => {
+                (None, None, Some(value), None)
+            }
+            (TemplateAction::TagPerRule(index), Some(Arg::Select)) => (
+                None,
+                None,
+                None,
+                Some((usize::from(*index), crate::mlx5::bank_tag(self.plan.bank))),
+            ),
+            _ => return Err(ModelError::Arguments),
+        };
+        Ok(move |s: &mut State| {
+            let (mark, stamp, meta, tag) = write;
+            if mark.is_some() {
+                s.mark = mark;
+            }
+            if let Some(node) = stamp {
+                s.stamped = true;
+                s.trap = node;
+            }
+            if meta.is_some() {
+                s.meta = meta;
+            }
+            if let Some((index, value)) = tag
+                && index < s.tags.len()
+            {
+                s.tags[index] = value;
+            }
+        })
     }
 
     fn jump(

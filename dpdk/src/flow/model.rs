@@ -436,8 +436,30 @@ impl<Pos> Pattern<Pos> {
     ///
     /// Returns [`Unmodelled`] for constraints the model does not parse.
     pub fn matches(&self, frame: &Frame, color: Option<Color>) -> Result<bool, Unmodelled> {
+        self.matches_tagged(frame, color, &[])
+    }
+
+    /// [`Pattern::matches`], with the TAG registers earlier rules wrote: `tags[i]` is register
+    /// `i`'s value; a register never written (beyond `tags`) holds zero, as on mlx5.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Unmodelled`] for constraints the model does not parse.
+    pub fn matches_tagged(
+        &self,
+        frame: &Frame,
+        color: Option<Color>,
+        tags: &[u32],
+    ) -> Result<bool, Unmodelled> {
         let mut headers = frame.headers.iter();
         for item in &self.items {
+            if let MatchItem::Tag(spec, mask) = item {
+                let value = tags.get(usize::from(spec.index)).copied().unwrap_or(0);
+                if (value ^ spec.data) & mask.data != 0 {
+                    return Ok(false);
+                }
+                continue;
+            }
             if let MatchItem::MeterColor(spec, mask) = item {
                 let Some(color) = color else {
                     return Ok(false);
@@ -813,5 +835,26 @@ mod tests {
                     "no view starts with {expected:02x?}\nviews: {views:02x?}\nbytes: {bytes:02x?}"
                 );
             });
+    }
+
+    /// A TAG item matches the register file: an unwritten register holds zero.
+    #[test]
+    fn a_tag_item_matches_its_register() {
+        use crate::flow::template::Pattern;
+        let bytes = inner([10, 0, 0, 1], 17, 80, 0);
+        let frame = views(&bytes).swap_remove(0);
+        let tagged = Pattern::new().tag(0, 2);
+        assert!(tagged.matches_tagged(&frame, None, &[2]).unwrap());
+        assert!(!tagged.matches_tagged(&frame, None, &[1]).unwrap());
+        assert!(
+            !tagged.matches_tagged(&frame, None, &[]).unwrap(),
+            "unwritten is zero"
+        );
+        assert!(
+            Pattern::new()
+                .tag(1, 0)
+                .matches_tagged(&frame, None, &[2])
+                .unwrap()
+        );
     }
 }

@@ -104,52 +104,86 @@ pub struct Policy {
     pub decapped_trap: Option<std::num::NonZero<u8>>,
 }
 
-/// The stamp every port's trap rule writes: what the configuration publisher wants
-/// ([`Stamping::request`], at each flip), and what each port has confirmed. A flip is done only
-/// once every port stamps the new generation: before that, an idle worker could acknowledge it
-/// and the previous generation retire while a port still stamps packets with it.
+/// One configuration generation's policy, as offload compiles it: the ACLs, where the flow filter
+/// sends each source VPC's traffic, the peering rate limits and the ingress policy.
+#[derive(Debug, Clone)]
+pub struct Inputs {
+    /// The ACL filter's rules.
+    pub acls: Arc<acl_filter::AclFilterContext>,
+    /// The flow filter's tables.
+    pub routing: Arc<flow_filter::FlowFilterContext>,
+    /// The peering rate limits.
+    pub rate_limits: Arc<rate_limit::RateLimits<PeeringRules>>,
+    /// The ingress policy.
+    pub ingress: Arc<rate_limit::RateLimits<IngressRules>>,
+}
+
+impl Inputs {
+    /// What `policy`'s readers publish now.
+    #[must_use]
+    pub fn load(policy: &Policy) -> Inputs {
+        Inputs {
+            acls: policy.acls.load(),
+            routing: policy.routing.load(),
+            rate_limits: policy.rate_limits.load(),
+            ingress: policy.ingress.load(),
+        }
+    }
+
+    /// Whether `other` is the same publication of every part.
+    #[must_use]
+    pub fn same(&self, other: &Inputs) -> bool {
+        Arc::ptr_eq(&self.acls, &other.acls)
+            && Arc::ptr_eq(&self.routing, &other.routing)
+            && Arc::ptr_eq(&self.rate_limits, &other.rate_limits)
+            && Arc::ptr_eq(&self.ingress, &other.ingress)
+    }
+}
+
+/// The generation every port's NIC is to classify under: its stamp, and its policy, which the
+/// port compiles into the stamp's bank before turning its selector to it (the train track,
+/// `notes/match-action-dag/GENERATIONS.md` §3). The configuration publisher asks for it at each
+/// flip ([`Stamping::request`]), and each port confirms it once its NIC classifies under it: the
+/// flip is done only then. Before, an idle worker could acknowledge it and the previous generation
+/// retire while a port still classified packets under it.
 #[derive(Debug)]
 pub struct Stamping {
-    wanted: concurrency::sync::atomic::AtomicU8,
+    wanted: concurrency::sync::Mutex<(net::packet::Stamp, Inputs)>,
     ports: concurrency::sync::Mutex<Vec<Arc<concurrency::sync::atomic::AtomicU8>>>,
 }
 
 impl Stamping {
-    /// Stamping with `stamp`, no port yet.
+    /// Classifying under `stamp`, with `inputs`, no port yet.
     #[must_use]
-    pub fn new(stamp: net::packet::Stamp) -> Self {
+    pub fn new(stamp: net::packet::Stamp, inputs: Inputs) -> Self {
         Stamping {
-            wanted: concurrency::sync::atomic::AtomicU8::new(stamp.to_bits()),
+            wanted: concurrency::sync::Mutex::new((stamp, inputs)),
             ports: concurrency::sync::Mutex::new(Vec::new()),
         }
     }
 
-    /// Have every port stamp with `stamp`; whether every port does now. Call again until it
-    /// does: ports confirm from their own threads.
-    pub fn request(&self, stamp: net::packet::Stamp) -> bool {
+    /// Have every port classify under `stamp`, with `inputs`; whether every port does now. Call
+    /// again until it does: ports confirm from their own threads.
+    pub fn request(&self, stamp: net::packet::Stamp, inputs: Inputs) -> bool {
         use concurrency::sync::atomic::Ordering;
-        self.wanted.store(stamp.to_bits(), Ordering::Release);
+        *self.wanted.lock() = (stamp, inputs);
         self.ports
             .lock()
             .iter()
             .all(|applied| applied.load(Ordering::Acquire) == stamp.to_bits())
     }
 
-    /// What ports should stamp with now.
+    /// What ports should classify under now, and its policy.
     #[must_use]
-    pub fn wanted(&self) -> net::packet::Stamp {
-        use concurrency::sync::atomic::Ordering;
-        net::packet::Stamp::from_bits(self.wanted.load(Ordering::Acquire))
-            .unwrap_or_else(|| unreachable!("only stamps are stored"))
+    pub fn wanted(&self) -> (net::packet::Stamp, Inputs) {
+        self.wanted.lock().clone()
     }
 
-    /// A port's confirmation: it stores each stamp once its trap rule writes it (or once nothing
-    /// it holds is reachable). Starts at what is wanted now: a port that has installed nothing
-    /// stamps nothing.
+    /// A port's confirmation: it stores each stamp once its NIC classifies under it (or once
+    /// nothing it holds is reachable). Starts at nothing, which no stamp encodes to: a port has
+    /// confirmed nothing until it has installed its first generation.
     pub(crate) fn register(&self) -> Arc<concurrency::sync::atomic::AtomicU8> {
-        let applied = Arc::new(concurrency::sync::atomic::AtomicU8::new(
-            self.wanted().to_bits(),
-        ));
+        let applied = Arc::new(concurrency::sync::atomic::AtomicU8::new(0));
         self.ports.lock().push(Arc::clone(&applied));
         applied
     }

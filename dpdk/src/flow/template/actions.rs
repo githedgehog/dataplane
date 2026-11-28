@@ -68,6 +68,10 @@ pub enum TemplateAction {
     /// A modify-header action: mlx5 orders it after decapsulation, counting and metering, and
     /// before the fate.
     MetaPerRule,
+    /// Set TAG register `index` to the value each rule names with [`RuleArg::Tag`], for a later
+    /// group to match ([`Pattern::tag`](super::Pattern::tag)). A modify-header action, as
+    /// [`MetaPerRule`](TemplateAction::MetaPerRule).
+    TagPerRule(u8),
 }
 
 /// The queues and hash types of a [`TemplateAction::Rss`].
@@ -88,6 +92,7 @@ impl TemplateAction {
                 | TemplateAction::JumpPerRule
                 | TemplateAction::MarkPerRule
                 | TemplateAction::MetaPerRule
+                | TemplateAction::TagPerRule(_)
         )
     }
 }
@@ -103,6 +108,8 @@ pub enum RuleArg<'a, D: Domain> {
     Mark(u32),
     /// The value for a [`TemplateAction::MetaPerRule`].
     Meta(u32),
+    /// The value for a [`TemplateAction::TagPerRule`].
+    Tag(u32),
 }
 
 /// The configuration an action points at.
@@ -174,12 +181,41 @@ impl core::fmt::Debug for ModifyField {
     }
 }
 
+/// A register a modify-field sets from an immediate: META, or TAG register `index`.
+#[derive(Clone, Copy)]
+enum Register {
+    Meta,
+    Tag(u8),
+}
+
+impl Register {
+    fn field(self) -> rte_flow_field_id::Type {
+        match self {
+            Register::Meta => rte_flow_field_id::RTE_FLOW_FIELD_META,
+            Register::Tag(_) => rte_flow_field_id::RTE_FLOW_FIELD_TAG,
+        }
+    }
+
+    fn index(self) -> u8 {
+        match self {
+            Register::Meta => 0,
+            Register::Tag(index) => index,
+        }
+    }
+}
+
 /// Set META to `value`: a modify-field from an immediate, the whole 32 bits.
 fn set_meta(value: u32) -> OwnedAction {
+    set_register(Register::Meta, value)
+}
+
+/// Set `register` to `value`: a modify-field from an immediate, the whole 32 bits.
+fn set_register(register: Register, value: u32) -> OwnedAction {
     // SAFETY: zero is valid for every field of this C struct.
     let mut field: rte_flow_action_modify_field = unsafe { core::mem::zeroed() };
     field.operation = rte_flow_modify_op::RTE_FLOW_MODIFY_SET;
-    field.dst.field = rte_flow_field_id::RTE_FLOW_FIELD_META;
+    field.dst.field = register.field();
+    field.dst.annon1.annon1.annon1.annon1.annon1.tag_index = register.index();
     field.src.field = rte_flow_field_id::RTE_FLOW_FIELD_VALUE;
     // `rte_flow_item_meta.data` is a host-order `u32`.
     let mut immediate = [0u8; 16];
@@ -197,10 +233,15 @@ fn set_meta(value: u32) -> OwnedAction {
 /// and offset, so nothing else of the source is set.) As proved on mlx5 HWS in
 /// `notes/match-action-dag/spike-trap/trapspike.c`.
 fn set_meta_mask() -> OwnedAction {
+    set_register_mask(Register::Meta)
+}
+
+/// The mask of a per-rule [`set_register`]; see [`set_meta_mask`].
+fn set_register_mask(register: Register) -> OwnedAction {
     // SAFETY: zero is valid for every field of this C struct.
     let mut field: rte_flow_action_modify_field = unsafe { core::mem::zeroed() };
     field.operation = rte_flow_modify_op::RTE_FLOW_MODIFY_SET;
-    field.dst.field = rte_flow_field_id::RTE_FLOW_FIELD_META;
+    field.dst.field = register.field();
     // Writing a union's field is safe: these are the destination's level, tag index and offset.
     field.dst.annon1.annon1.annon1.annon1.level = u8::MAX;
     field.dst.annon1.annon1.annon1.annon1.annon1.tag_index = u8::MAX;
@@ -257,6 +298,7 @@ fn fixed(action: &TemplateAction) -> OwnedAction {
         TemplateAction::JumpPerRule => OwnedAction::new(at::RTE_FLOW_ACTION_TYPE_JUMP, Conf::None),
         TemplateAction::MarkPerRule => OwnedAction::new(at::RTE_FLOW_ACTION_TYPE_MARK, Conf::None),
         TemplateAction::MetaPerRule => set_meta(0),
+        TemplateAction::TagPerRule(index) => set_register(Register::Tag(index), 0),
         TemplateAction::VxlanDecap => {
             OwnedAction::new(at::RTE_FLOW_ACTION_TYPE_VXLAN_DECAP, Conf::None)
         }
@@ -289,6 +331,7 @@ pub(crate) fn template(actions: &[TemplateAction]) -> (Vec<OwnedAction>, Vec<Own
                 Conf::Mark(rte_flow_action_mark { id: u32::MAX }),
             ),
             TemplateAction::MetaPerRule => set_meta_mask(),
+            TemplateAction::TagPerRule(index) => set_register_mask(Register::Tag(index)),
             ref other => fixed(other),
         })
         .collect();
@@ -368,6 +411,9 @@ pub(crate) fn rule<D: Domain>(
                     Conf::Mark(rte_flow_action_mark { id: *id }),
                 )),
                 (TemplateAction::MetaPerRule, RuleArg::Meta(value)) => Ok(set_meta(*value)),
+                (TemplateAction::TagPerRule(index), RuleArg::Tag(value)) => {
+                    Ok(set_register(Register::Tag(*index), *value))
+                }
                 _ => Err(ArgumentError::Kind {
                     index,
                     action: action.clone(),
@@ -496,6 +542,35 @@ mod tests {
             assert_eq!(immediate[..4], value.to_ne_bytes());
             assert_eq!(immediate[4..], [0; 12]);
         });
+    }
+
+    /// A per-rule TAG write sets its template's register to the rule's value.
+    #[test]
+    fn a_per_rule_tag_sets_its_register_to_the_rules_value() {
+        let actions =
+            rule::<crate::flow::Ingress>(&[TemplateAction::TagPerRule(3)], &[RuleArg::Tag(2)])
+                .unwrap_or_else(|e| panic!("{e}"));
+        let Conf::ModifyField(ModifyField(field)) = &actions[0].conf else {
+            panic!("not a modify-field: {:?}", actions[0].conf)
+        };
+        assert_eq!(field.dst.field, rte_flow_field_id::RTE_FLOW_FIELD_TAG);
+        // SAFETY: the views of the unions that `set_register` writes.
+        let (index, immediate) = unsafe {
+            (
+                field.dst.annon1.annon1.annon1.annon1.annon1.tag_index,
+                field.src.annon1.value,
+            )
+        };
+        assert_eq!(index, 3);
+        assert_eq!(immediate[..4], 2u32.to_ne_bytes());
+        assert_eq!(
+            rule::<crate::flow::Ingress>(&[TemplateAction::TagPerRule(3)], &[RuleArg::Meta(2)])
+                .err(),
+            Some(ArgumentError::Kind {
+                index: 0,
+                action: TemplateAction::TagPerRule(3)
+            })
+        );
     }
 
     #[test]

@@ -557,7 +557,7 @@ fn meter_dependencies<D: Domain>(args: &[RuleArg<'_, D>]) -> Vec<Resource> {
     args.iter()
         .filter_map(|arg| match arg {
             RuleArg::Meter(meter) => Some(meter.resource.clone()),
-            RuleArg::Jump(_) | RuleArg::Mark(_) | RuleArg::Meta(_) => None,
+            RuleArg::Jump(_) | RuleArg::Mark(_) | RuleArg::Meta(_) | RuleArg::Tag(_) => None,
         })
         .collect()
 }

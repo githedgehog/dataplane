@@ -639,8 +639,8 @@ fn a_flip_waits_for_hardware_to_stamp() {
     let stamps = Rc::new(Cell::new(false));
     let generations = Generations::new(Tag::new(1, &log)).with_hardware({
         let (asked, stamps) = (Rc::clone(&asked), Rc::clone(&stamps));
-        move |stamp| {
-            asked.set(Some(stamp));
+        move |snapshot: &Snapshot<Tag>| {
+            asked.set(Some(snapshot.stamp()));
             stamps.get()
         }
     });

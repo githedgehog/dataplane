@@ -233,10 +233,10 @@ fn failed_switch_insertion_detaches_known_rules_and_tracks_the_unknown_one() {
                 if root_fails { 2 } else { 1 }
             );
             assert_eq!(
-                port.switch.as_ref().unwrap().rules.len(),
+                port.switch.as_ref().unwrap().rules[0].len(),
                 usize::from(!root_fails)
             );
-            assert!(!port.vpcs.contains_key(&vni(200)));
+            assert!(!port.vpcs[0].contains_key(&vni(200)));
             assert_eq!(
                 port.groups.free, recycled,
                 "an uncertain switch may reach its group"
@@ -267,10 +267,7 @@ fn rejected_switch_insertion_leaves_existing_policy_and_reclaims_the_unused_grou
     assert!(!port.stale());
     assert!(port.root.is_some());
     assert_eq!(
-        port.switch
-            .as_ref()
-            .unwrap()
-            .rules
+        port.switch.as_ref().unwrap().rules[0]
             .keys()
             .copied()
             .collect::<Vec<_>>(),
@@ -290,7 +287,14 @@ fn failed_switch_removal_is_remembered_when_root_removal_also_fails() {
     fixture.fail("destroy", Outcome::Reject); // Root removal fails too.
     assert!(matches!(port.remove(vni(100)), Err(Error::Lost { .. })));
     assert!(port.poisoned() && port.stale());
-    assert!(port.switch.as_ref().unwrap().rules.is_empty());
+    assert!(
+        port.switch
+            .as_ref()
+            .unwrap()
+            .rules
+            .iter()
+            .all(BTreeMap::is_empty)
+    );
     assert_eq!(fixture.calls("destroy") - destroys, 3); // Still remove the other VPC's switch.
     assert_eq!(port.groups.free, [] as [u32; 0]);
 }
@@ -305,7 +309,14 @@ fn failed_root_removal_can_still_detach_all_known_switches() {
     assert!(matches!(port.clear(), Err(Error::Lost { .. })));
     assert!(port.poisoned());
     assert!(!port.stale());
-    assert!(port.switch.as_ref().unwrap().rules.is_empty());
+    assert!(
+        port.switch
+            .as_ref()
+            .unwrap()
+            .rules
+            .iter()
+            .all(BTreeMap::is_empty)
+    );
 }
 
 #[test]
@@ -320,7 +331,7 @@ fn uncertain_root_creation_is_recorded_before_poisoning() {
     ));
     assert!(port.poisoned() && port.root_lingers);
     assert!(!port.stale(), "the switch has no VPC rules to reach");
-    assert!(port.vpcs.is_empty());
+    assert!(port.vpcs.iter().all(BTreeMap::is_empty));
 }
 
 /// A refused ingress rule leaves that rule in software alone: not its meter, which every VPC's
@@ -402,51 +413,70 @@ fn decapsulating(sources: &[u32]) -> Plan {
     .unwrap()
 }
 
-/// The trap rule goes in with the stamp the port has, before anything jumps to it, and a flip
-/// rewrites it in place: one update, no rule added or removed.
+/// The train track: the trap rules (per group, one per bank) and the selector go in once, with
+/// the stamp the port starts with. A flip fills the inactive bank with the next generation's
+/// rules, then rewrites that bank's trap rules and the selector in place: no rule of the active
+/// bank is touched meanwhile, and the next flip back works on the bank just left.
 #[test]
-fn the_trap_rule_is_installed_once_and_restamped_in_place() {
+fn a_flip_fills_the_inactive_bank_then_restamps_it_and_turns_the_selector() {
     let fixture = Fixture::new();
     let flows = fixture.flows();
     let first = Stamp::new(Bank::A, 1);
     let mut port = Port::new(&flows).stamping(first);
     port.reconcile(&decapsulating(&[100, 200]), port.observe())
         .unwrap();
-    assert!(!port.traps.is_empty(), "a decapsulating plan stamps");
-    assert_eq!(port.stamp(), first);
-    let (rules, creates, updates) = (
-        fixture.live_rules(),
-        fixture.calls("create"),
-        fixture.calls("update"),
+    assert_eq!(
+        port.traps.len(),
+        4,
+        "two trap groups, a rule per bank in each"
     );
+    assert!(port.selector.is_some());
+    assert_eq!((port.stamp(), port.active()), (first, Bank::A));
+    // The next generation, in bank B: VPC 200 is gone from it.
+    port.target(Bank::B);
+    port.reconcile(&decapsulating(&[100]).in_bank(Bank::B), port.observe())
+        .unwrap();
+    assert_eq!(port.active(), Bank::A, "filling a bank turns nothing");
+    assert_eq!(port.vpcs[0].len(), 2, "the active bank is untouched");
+    assert_eq!(port.vpcs[1].len(), 1);
+    let (updates, rules) = (fixture.calls("update"), fixture.live_rules());
     let next = Stamp::new(Bank::B, 2);
     port.restamp(next).unwrap();
-    assert_eq!(port.stamp(), next);
-    // One update per trap rule: the raw deliveries', and the decapsulated ones'.
-    assert_eq!(port.traps.len(), 2);
-    assert_eq!(fixture.calls("update"), updates + 2);
-    assert_eq!(fixture.calls("create"), creates);
-    assert_eq!(fixture.live_rules(), rules);
-    // A later plan keeps the rule, and its stamp.
-    port.reconcile(&decapsulating(&[100]), port.observe())
+    assert_eq!((port.stamp(), port.active()), (next, Bank::B));
+    // Bank B's two trap rules, then the selector.
+    assert_eq!(fixture.calls("update"), updates + 3);
+    assert_eq!(
+        fixture.live_rules(),
+        rules,
+        "a flip adds and removes no rule"
+    );
+    // And back: bank A, left by the flip, takes the generation after.
+    port.target(Bank::A);
+    port.reconcile(&decapsulating(&[100, 300]), port.observe())
         .unwrap();
-    assert!(!port.traps.is_empty());
-    assert_eq!(port.stamp(), next);
+    assert_eq!(port.vpcs[1].len(), 1, "the active bank is untouched");
+    port.restamp(Stamp::new(Bank::A, 3)).unwrap();
+    assert_eq!(port.active(), Bank::A);
+    assert_eq!(
+        port.vpcs[0].keys().copied().collect::<Vec<_>>(),
+        [vni(100), vni(300)]
+    );
 }
 
-/// Before anything is installed, a restamp is only remembered: the rule goes in with it.
+/// A port starting in bank B (its first generation's) installs the selector writing B, and the
+/// trap rules of B stamping that generation.
 #[test]
-fn a_restamp_before_the_trap_is_installed_is_what_it_installs_with() {
+fn a_port_starts_in_the_bank_of_its_first_stamp() {
     let fixture = Fixture::new();
     let flows = fixture.flows();
-    let mut port = Port::new(&flows);
     let stamp = Stamp::new(Bank::B, 6);
-    port.restamp(stamp).unwrap();
-    assert_eq!(fixture.calls("update"), 0);
-    port.reconcile(&decapsulating(&[100]), port.observe())
+    let mut port = Port::new(&flows).stamping(stamp);
+    port.reconcile(&decapsulating(&[100]).in_bank(Bank::B), port.observe())
         .unwrap();
-    assert!(!port.traps.is_empty());
-    assert_eq!(port.stamp(), stamp);
+    assert_eq!((port.stamp(), port.active()), (stamp, Bank::B));
+    assert_eq!(port.vpcs[1].len(), 1);
+    assert!(port.vpcs[0].is_empty());
+    assert_eq!(fixture.calls("update"), 0);
 }
 
 /// A trap rule left stamping the old generation would have its packets dropped as stale once that

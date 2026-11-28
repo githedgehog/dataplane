@@ -631,6 +631,13 @@ pub enum ItemShape {
         /// Color mask.
         color: u32,
     },
+    /// A TAG register.
+    Tag {
+        /// Which register.
+        index: u8,
+        /// Value mask.
+        data: u32,
+    },
 }
 
 impl MatchItem {
@@ -684,6 +691,10 @@ impl MatchItem {
                 vni: unsafe { mask.annon1.annon1.vni },
             },
             MatchItem::MeterColor(_, mask) => ItemShape::MeterColor { color: mask.color },
+            MatchItem::Tag(spec, mask) => ItemShape::Tag {
+                index: spec.index,
+                data: mask.data,
+            },
         }
     }
 }

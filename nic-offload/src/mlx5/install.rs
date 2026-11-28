@@ -20,8 +20,8 @@ use rekon::{SyncCreate, SyncObserve, SyncReconcile, SyncRemove};
 use tracing::{error, info, warn};
 
 use super::{
-    Arg, Error, Group, MeterKey, Plan, PlannedTable, PlannedVpc, Role, SWITCH, TRAP, TRAP_DECAPPED,
-    VpcSpec, unknown_state,
+    Arg, Error, Group, IngressSpec, MeterKey, Plan, PlannedTable, PlannedVpc, Role, SELECTOR,
+    SWITCH, TRAP, TRAP_DECAPPED, VpcSpec, bank_tag, unknown_state,
 };
 use crate::Policy;
 use crate::program::{Exclusions, IngressVerdict, Origin, Peering, Program, Scope};
@@ -53,8 +53,8 @@ type Table<'t> = SharedTable<'t, Ingress>;
 static FORGOTTEN: concurrency::process_global::Mutex<Vec<usize>> =
     concurrency::process_global::Mutex::new(Vec::new());
 
-/// Flow group numbers: 0 is the root, 1 the switch, 2 and 3 the traps, the rest are handed out and
-/// taken back.
+/// Flow group numbers: 0 is the root, 1 the switch, 2 and 3 the traps, 4 the selector, the rest
+/// are handed out and taken back.
 #[derive(Debug)]
 struct Groups {
     next: u32,
@@ -82,7 +82,8 @@ impl Groups {
 #[derive(Debug)]
 struct Switch<'t> {
     // Fields drop in order: the switch rules before the catch-all, rules before their tables.
-    rules: BTreeMap<Vni, Rule<'t>>,
+    /// Per bank ([`bank`]).
+    rules: [BTreeMap<Vni, Rule<'t>>; 2],
     catch_all: Rule<'t>,
     /// The rules delivering exceptions encapsulated, ahead of the switch rules (decapsulation).
     exceptions: Vec<Rule<'t>>,
@@ -100,6 +101,38 @@ struct TrapRule<'t> {
     actions: usize,
     /// The node it traps at (`None`: the root).
     node: Option<NonZero<u8>>,
+    /// The bank whose packets it stamps.
+    bank: Bank,
+}
+
+/// The selector table and its one rule, which writes the bank packets are classified under.
+#[derive(Debug)]
+struct SelectorRule<'t> {
+    // Fields drop in order: the rule before its table.
+    rule: Rule<'t>,
+    table: Table<'t>,
+    /// The planned rule's actions template, for updates in place.
+    actions: usize,
+}
+
+/// `bank`'s index into the port's per-bank state.
+const fn bank(bank: Bank) -> usize {
+    match bank {
+        Bank::A => 0,
+        Bank::B => 1,
+    }
+}
+
+/// The meters a generation's rules charge.
+fn spec_meters(spec: &VpcSpec) -> impl Iterator<Item = &MeterKey> {
+    spec.ingress
+        .iter()
+        .flat_map(|(_, _, _, verdict)| match verdict {
+            IngressSpec::Police(first, then) => [Some(first), then.as_ref()],
+            _ => [None, None],
+        })
+        .flatten()
+        .chain(spec.limits.iter().map(|(_, _, meter)| meter))
 }
 
 /// What the trap rule trapping at `node` writes for `stamp`.
@@ -254,12 +287,19 @@ pub struct Reconciled {
 pub struct Port<'t> {
     // Fields drop in order: the root first, so no packet enters what goes next.
     root: Option<Rule<'t>>,
+    /// With decapsulation, between the root and the switch.
+    selector: Option<SelectorRule<'t>>,
     switch: Option<Switch<'t>>,
-    vpcs: BTreeMap<Vni, Generation<'t>>,
+    /// Per bank ([`bank`]): each bank's VPC generations, which its switch rules jump to.
+    vpcs: [BTreeMap<Vni, Generation<'t>>; 2],
     /// After the generations, which jump to them.
     traps: Vec<TrapRule<'t>>,
-    /// The stamp the trap rule writes: the configuration generation hardware classifies under.
-    stamp: Stamp,
+    /// Per bank: the stamp its trap rules write, of the configuration generation it holds.
+    stamps: [Stamp; 2],
+    /// The bank the selector writes: what packets are classified under now.
+    active: Bank,
+    /// The bank reconciling works on ([`Port::target`]).
+    target: Bank,
     meters: Vec<InstalledMeter<'t>>,
     flows: &'t TemplateFlows<'t>,
     patterns: Vec<(Vec<ItemShape>, SharedPatternTemplate<'t, Ingress>)>,
@@ -287,16 +327,20 @@ impl<'t> Port<'t> {
     pub fn new(flows: &'t TemplateFlows<'t>) -> Port<'t> {
         Port {
             root: None,
+            selector: None,
             switch: None,
-            vpcs: BTreeMap::new(),
+            vpcs: [BTreeMap::new(), BTreeMap::new()],
             traps: Vec::new(),
-            stamp: Stamp::new(Bank::A, 1),
+            // Bank B holds no generation until the first flip to it.
+            stamps: [Stamp::new(Bank::A, 1), Stamp::new(Bank::B, 0)],
+            active: Bank::A,
+            target: Bank::A,
             meters: Vec::new(),
             flows,
             patterns: Vec::new(),
             actions: Vec::new(),
             groups: Groups {
-                next: 4,
+                next: 5,
                 free: Vec::new(),
             },
             next_profile: 0,
@@ -310,31 +354,46 @@ impl<'t> Port<'t> {
         }
     }
 
-    /// The same port, stamping with `stamp` once its trap rule is installed.
+    /// The same port, classifying under `stamp`'s bank, stamped with `stamp`, from the start.
     #[must_use]
     pub fn stamping(mut self, stamp: Stamp) -> Port<'t> {
-        self.stamp = stamp;
+        self.stamps[bank(stamp.bank())] = stamp;
+        self.active = stamp.bank();
+        self.target = stamp.bank();
         self
     }
 
-    /// The stamp the trap rule writes, or will once installed.
+    /// The stamp of what packets are classified under now.
     #[must_use]
     pub fn stamp(&self) -> Stamp {
-        self.stamp
+        self.stamps[bank(self.active)]
     }
 
-    /// Stamp what the switch passes on with `stamp` from now on: the trap rule, rewritten in place
-    /// (a flip of the configuration generation). Before the rule is installed, it is installed
-    /// with `stamp`.
+    /// The bank packets are classified under now.
+    #[must_use]
+    pub fn active(&self) -> Bank {
+        self.active
+    }
+
+    /// Reconcile `bank` from now on: plans to reconcile must be of it ([`Plan::in_bank`]).
+    pub fn target(&mut self, bank: Bank) {
+        self.target = bank;
+    }
+
+    /// Classify under `stamp` from now on: its bank's trap rules rewritten in place to write it,
+    /// then, if that bank is not the active one, the selector flipped to it (the train track:
+    /// the bank must hold the generation's rules first, [`Port::target`] and reconcile). Before
+    /// the rules are installed, they are installed with it.
     ///
     /// # Errors
     ///
-    /// If the rule could not be rewritten. Any failure loses the port ([`Port::lose`]): a rule
-    /// left stamping the old generation would have its packets dropped as stale once that
+    /// If a rule could not be rewritten. Any failure loses the port ([`Port::lose`]): a rule left
+    /// stamping or selecting an old generation would have its packets dropped as stale once that
     /// generation retires, so nothing the port holds may stay reachable.
     pub fn restamp(&mut self, stamp: Stamp) -> Result<(), Error> {
+        let to = stamp.bank();
         let mut failed = None;
-        for trap in &mut self.traps {
+        for trap in self.traps.iter_mut().filter(|trap| trap.bank == to) {
             let args = [SharedArg::Mark(trap_mark(stamp, trap.node))];
             if let Err(e) = trap.table.update(&mut trap.rule, trap.actions, &args) {
                 failed = Some(e);
@@ -344,7 +403,19 @@ impl<'t> Port<'t> {
         if let Some(e) = failed {
             return Err(self.lose("restamping a trap rule", e));
         }
-        self.stamp = stamp;
+        self.stamps[bank(to)] = stamp;
+        if self.active != to {
+            if let Some(selector) = &mut self.selector {
+                let args = [SharedArg::Tag(bank_tag(to))];
+                if let Err(e) = selector
+                    .table
+                    .update(&mut selector.rule, selector.actions, &args)
+                {
+                    return Err(self.lose("flipping the selector", e));
+                }
+            }
+            self.active = to;
+        }
         Ok(())
     }
 
@@ -402,7 +473,7 @@ impl<'t> Port<'t> {
             .switch
             .as_mut()
             .map_or_default(|s| std::mem::take(&mut s.rules));
-        for (vni, rule) in rules {
+        for (vni, rule) in rules.into_iter().flatten() {
             if let Err(e) = rule.destroy() {
                 error!(
                     "VPC {vni}'s switch rule could not be removed either ({e}): the NIC may enforce a stale policy until the port restarts"
@@ -546,8 +617,10 @@ impl<'t> Port<'t> {
                 Arg::Jump(g) => group(g).map(SharedArg::Jump),
                 Arg::Meter(m) => Ok(SharedArg::Meter(self.installed_meter(m)?.meter.clone())),
                 Arg::Mark(id) => Ok(SharedArg::Mark(id)),
-                Arg::Stamp(node) => Ok(SharedArg::Mark(trap_mark(self.stamp, node))),
+                // A trap rule's stamp is its bank's (`fixed`); the active bank's otherwise.
+                Arg::Stamp(node) => Ok(SharedArg::Mark(trap_mark(self.stamp(), node))),
                 Arg::Meta(value) => Ok(SharedArg::Meta(value)),
+                Arg::Select => Ok(SharedArg::Tag(bank_tag(self.active))),
             })
             .collect()
     }
@@ -578,6 +651,7 @@ impl<'t> Port<'t> {
             Group::Switch => Ok(SWITCH),
             Group::Trap => Ok(TRAP),
             Group::TrapDecapped => Ok(TRAP_DECAPPED),
+            Group::Selector => Ok(SELECTOR),
             Group::Color(m) => self
                 .installed_meter(m)?
                 .colors
@@ -592,7 +666,8 @@ impl<'t> Port<'t> {
         }
     }
 
-    /// Make sure of the trap, the switch table, its catch-all and the root, in that order.
+    /// Make sure of the traps, the switch table, its catch-all, the selector and the root, in
+    /// that order.
     fn fixed(&mut self, plan: &Plan) -> Result<(), Error> {
         let [root, switch, catch_all, exceptions @ ..] = plan.fixed.as_slice() else {
             return Ok(());
@@ -604,20 +679,24 @@ impl<'t> Port<'t> {
                 } else {
                     TRAP
                 };
+                // One table per trap group, a rule per bank in it: the table owns its rules'
+                // template, so every rule but the first shares the first's table.
                 let table = self.table(plan, planned, group)?;
-                let rule = &planned.rules[0];
-                let node = match rule.args.as_slice() {
-                    [Arg::Stamp(node)] => *node,
-                    _ => return Err(Error::NoSuchGroup(planned.group)),
-                };
-                let args = self.args(&rule.args, &|g| Err(Error::NoSuchGroup(g)))?;
-                let installed = self.insert("inserting a trap rule", &table, rule, &args)??;
-                self.traps.push(TrapRule {
-                    rule: installed,
-                    table,
-                    actions: rule.actions,
-                    node,
-                });
+                for rule in &planned.rules {
+                    let (node, of) = match (rule.args.as_slice(), rule.role) {
+                        ([Arg::Stamp(node)], Role::Trap(_, of)) => (*node, of),
+                        _ => return Err(Error::NoSuchGroup(planned.group)),
+                    };
+                    let args = [SharedArg::Mark(trap_mark(self.stamps[bank(of)], node))];
+                    let installed = self.insert("inserting a trap rule", &table, rule, &args)??;
+                    self.traps.push(TrapRule {
+                        rule: installed,
+                        table: table.clone(),
+                        actions: rule.actions,
+                        node,
+                        bank: of,
+                    });
+                }
             }
         }
         if self.switch.is_none() {
@@ -642,11 +721,24 @@ impl<'t> Port<'t> {
                 exception_tables.push(table);
             }
             self.switch = Some(Switch {
-                rules: BTreeMap::new(),
+                rules: [BTreeMap::new(), BTreeMap::new()],
                 catch_all,
                 exceptions: exception_rules,
                 table,
                 exception_tables,
+            });
+        }
+        if let Some(planned) = &plan.selector
+            && self.selector.is_none()
+        {
+            let table = self.table(plan, planned, SELECTOR)?;
+            let rule = &planned.rules[0];
+            let args = self.args(&rule.args, &|g| Err(Error::NoSuchGroup(g)))?;
+            let installed = self.insert("inserting the selector rule", &table, rule, &args)??;
+            self.selector = Some(SelectorRule {
+                rule: installed,
+                table,
+                actions: rule.actions,
             });
         }
         if self.root.is_none() {
@@ -915,10 +1007,15 @@ impl<'t> Port<'t> {
             self.root_lingers = true;
             return Err(self.lose("removing the root rule", e));
         }
-        let vnis: Vec<Vni> = self.vpcs.keys().copied().collect();
-        for vni in vnis {
-            self.remove(vni)?;
+        let target = self.target;
+        for of in [Bank::A, Bank::B] {
+            self.target = of;
+            let vnis: Vec<Vni> = self.vpcs[bank(of)].keys().copied().collect();
+            for vni in vnis {
+                self.remove(vni)?;
+            }
         }
+        self.target = target;
         if let Some(switch) = self.switch.take() {
             let Switch {
                 rules,
@@ -929,12 +1026,17 @@ impl<'t> Port<'t> {
             } = switch;
             let rules = rules
                 .into_iter()
+                .flatten()
                 .map(|(vni, rule)| (Some(vni), rule))
                 .chain([(None, catch_all)])
                 .chain(exceptions.into_iter().map(|rule| (None, rule)));
             self.destroy_rules("removing the switch rules", rules)?;
             drop(table);
             drop(exception_tables);
+        }
+        if let Some(SelectorRule { rule, table, .. }) = self.selector.take() {
+            self.destroy_rules("removing the selector rule", [((), rule)])?;
+            drop(table);
         }
         for TrapRule { rule, table, .. } in std::mem::take(&mut self.traps) {
             self.destroy_rules("removing a trap rule", [((), rule)])?;
@@ -957,8 +1059,7 @@ impl<'t> Port<'t> {
     /// Hardware counters lag (by about half a second on a BlueField-3).
     #[must_use]
     pub fn counts(&self) -> Vec<(Role, Counts)> {
-        let mut counts: Vec<(Role, Counts)> = self
-            .vpcs
+        let mut counts: Vec<(Role, Counts)> = self.vpcs[bank(self.active)]
             .values()
             .flat_map(|g| &g.rules)
             .filter(|(role, _)| {
@@ -1006,8 +1107,8 @@ impl<'t> Port<'t> {
             add(&mut total.0, passed);
             add(&mut total.1, dropped);
         }
-        // Ingress meters count in their source VPCs' color groups.
-        for generation in self.vpcs.values() {
+        // Ingress meters count in their source VPCs' color groups, in either bank.
+        for generation in self.vpcs.iter().flat_map(BTreeMap::values) {
             for (name, (passed, dropped)) in generation.meter_counts() {
                 let total = totals.entry(name).or_default();
                 add(&mut total.0, passed);
@@ -1022,7 +1123,7 @@ impl<'t> Port<'t> {
     #[must_use]
     pub fn ingress_dropped(&self) -> BTreeMap<Vni, u64> {
         let mut totals = self.retired_ingress.clone();
-        for (vni, generation) in &self.vpcs {
+        for (vni, generation) in self.vpcs.iter().flatten() {
             *totals.entry(*vni).or_default() += generation.ingress_dropped();
         }
         totals
@@ -1034,8 +1135,7 @@ impl<'t> Port<'t> {
     ///
     /// Returns [`Error::Lost`] if the port was lost.
     pub fn detach_changed(&mut self, plan: &Plan) -> Result<(), Error> {
-        let changed: Vec<Vni> = self
-            .vpcs
+        let changed: Vec<Vni> = self.vpcs[bank(self.target)]
             .iter()
             .filter(|(vni, generation)| {
                 plan.vpcs
@@ -1053,7 +1153,7 @@ impl<'t> Port<'t> {
     /// The peerings the NIC enforces: those of the attached VPCs' rules.
     #[must_use]
     pub fn attached_peerings(&self) -> BTreeSet<Peering> {
-        self.vpcs
+        self.vpcs[bank(self.active)]
             .values()
             .flat_map(|g| g.spec.peerings.iter().copied())
             .collect()
@@ -1062,7 +1162,7 @@ impl<'t> Port<'t> {
     /// How many installed rules have a role `which` accepts.
     #[must_use]
     pub fn installed(&self, which: impl Fn(Role) -> bool) -> usize {
-        self.vpcs
+        self.vpcs[bank(self.active)]
             .values()
             .flat_map(|g| &g.rules)
             .filter(|(role, _)| which(*role))
@@ -1078,8 +1178,7 @@ impl SyncObserve for Port<'_> {
 
     fn observe(&self) -> Observed {
         Observed {
-            vpcs: self
-                .vpcs
+            vpcs: self.vpcs[bank(self.target)]
                 .iter()
                 .map(|(&vni, g)| (vni, g.spec.clone()))
                 .collect(),
@@ -1130,8 +1229,8 @@ impl SyncCreate for Port<'_> {
                 Arg::Mark(id) => Ok(SharedArg::Mark(id)),
                 Arg::Meta(value) => Ok(SharedArg::Meta(value)),
                 Arg::Jump(_) => Ok(SharedArg::Jump(entry)),
-                // A switch rule charges no meter, nor stamps.
-                Arg::Meter(_) | Arg::Stamp(_) => Err(Error::MeterNotMade),
+                // A switch rule charges no meter, nor stamps, nor selects.
+                Arg::Meter(_) | Arg::Stamp(_) | Arg::Select => Err(Error::MeterNotMade),
             })
             .collect();
         let args = match args {
@@ -1149,8 +1248,8 @@ impl SyncCreate for Port<'_> {
         let inserted = switch.table.insert(0, &rule.pattern, rule.actions, &args);
         match inserted {
             Ok(installed) => {
-                switch.rules.insert(vni, installed);
-                self.vpcs.insert(vni, generation);
+                switch.rules[bank(self.target)].insert(vni, installed);
+                self.vpcs[bank(self.target)].insert(vni, generation);
                 Ok(Vec::new())
             }
             Err(e) if unknown_state(&e) => {
@@ -1191,13 +1290,14 @@ impl SyncRemove for Port<'_> {
     where
         Self: 'a,
     {
-        if let Some(rule) = self.switch.as_mut().and_then(|s| s.rules.remove(&vni))
+        let of = bank(self.target);
+        if let Some(rule) = self.switch.as_mut().and_then(|s| s.rules[of].remove(&vni))
             && let Err(e) = rule.destroy()
         {
             self.switch_lingers = true;
             return Err(self.lose("removing a switch rule", e));
         }
-        match self.vpcs.remove(&vni) {
+        match self.vpcs[of].remove(&vni) {
             Some(generation) => self.teardown(generation),
             None => Ok(()),
         }
@@ -1236,19 +1336,29 @@ impl SyncReconcile for Port<'_> {
                 self.remove(*vni)?;
             }
         }
+        let other = &self.vpcs[1 - bank(self.target)];
         if plan.vpcs.is_empty() {
-            self.clear()?;
-            self.retired_meters.clear();
-            self.prune();
+            // The other bank may still hold a generation in use: only an empty port is cleared.
+            if other.is_empty() {
+                self.clear()?;
+                self.retired_meters.clear();
+                self.prune();
+            }
             return Ok(Reconciled::default());
         }
+        // The other bank's generations keep charging their meters.
+        let others: Vec<MeterKey> = other
+            .values()
+            .flat_map(|generation| spec_meters(&generation.spec))
+            .cloned()
+            .collect();
         // Meters the plan does not want go before new ones are made, which may need their room:
         // no attached generation charges them, as an attached one's spec (its meters with it) is
         // the plan's.
         let wanted = MeterIndex::new(plan.meters.iter().map(|m| &m.key));
         let mut kept = Vec::new();
         for meter in std::mem::take(&mut self.meters) {
-            if wanted.find(&meter.key).is_some() {
+            if wanted.find(&meter.key).is_some() || others.contains(&meter.key) {
                 kept.push(meter);
             } else {
                 self.unmake(meter)?;
@@ -1288,7 +1398,7 @@ impl SyncReconcile for Port<'_> {
         let attach: Vec<Vni> = plan
             .vpcs
             .keys()
-            .filter(|vni| !self.vpcs.contains_key(vni))
+            .filter(|vni| !self.vpcs[bank(self.target)].contains_key(vni))
             .copied()
             .collect();
         for vni in attach {
@@ -1394,6 +1504,62 @@ pub fn with_installed<'t, R>(
     Ok(result)
 }
 
+/// The peerings a refused rule of role `role` is of: what must stay in software with it.
+fn role_peerings(program: &Program, refused: Role) -> Vec<Peering> {
+    match refused {
+        Role::Police(rule) => program
+            .rules
+            .get(rule)
+            .map(|r| r.peering)
+            .into_iter()
+            .collect(),
+        Role::Deny(deny) => program
+            .denies
+            .get(deny)
+            .map(|d| d.peering)
+            .into_iter()
+            .collect(),
+        Role::Switch(vni)
+        | Role::Pass(vni)
+        | Role::CatchAll(Group::Deny(vni) | Group::Police(vni)) => program
+            .denies
+            .iter()
+            .filter(|d| d.matches.src_vni == vni)
+            .map(|d| d.peering)
+            .chain(
+                program
+                    .rules
+                    .iter()
+                    .filter(|r| r.matches.src_vni == vni)
+                    .map(|r| r.peering),
+            )
+            .collect(),
+        Role::Color(meter, _) => program
+            .rules
+            .iter()
+            .filter(|r| r.meter == meter)
+            .map(|r| r.peering)
+            .collect(),
+        Role::Root
+        | Role::Ingress(_)
+        | Role::IngressColor(..)
+        | Role::Exception(_)
+        | Role::Trap(..)
+        | Role::Selector
+        | Role::CatchAll(
+            Group::Root
+            | Group::Switch
+            | Group::Trap
+            | Group::TrapDecapped
+            | Group::Selector
+            | Group::Color(_)
+            | Group::Ingress(_)
+            | Group::IngressColor(..)
+            | Group::Exit(_),
+        ) => Vec::new(),
+    }
+}
+
 /// Map refused rules to software exclusions:
 ///
 /// - An ingress rule excludes itself; an ingress color rule excludes its meter.
@@ -1445,56 +1611,7 @@ pub(crate) fn peerings(program: &Program, refused: &[(Role, Error)]) -> Result<E
             excluded.vpcs.insert(vni);
             continue;
         }
-        let of_role: Vec<Peering> = match *role {
-            Role::Police(rule) => program
-                .rules
-                .get(rule)
-                .map(|r| r.peering)
-                .into_iter()
-                .collect(),
-            Role::Deny(deny) => program
-                .denies
-                .get(deny)
-                .map(|d| d.peering)
-                .into_iter()
-                .collect(),
-            Role::Switch(vni)
-            | Role::Pass(vni)
-            | Role::CatchAll(Group::Deny(vni) | Group::Police(vni)) => program
-                .denies
-                .iter()
-                .filter(|d| d.matches.src_vni == vni)
-                .map(|d| d.peering)
-                .chain(
-                    program
-                        .rules
-                        .iter()
-                        .filter(|r| r.matches.src_vni == vni)
-                        .map(|r| r.peering),
-                )
-                .collect(),
-            Role::Color(meter, _) => program
-                .rules
-                .iter()
-                .filter(|r| r.meter == meter)
-                .map(|r| r.peering)
-                .collect(),
-            Role::Root
-            | Role::Ingress(_)
-            | Role::IngressColor(..)
-            | Role::Exception(_)
-            | Role::Trap(_)
-            | Role::CatchAll(
-                Group::Root
-                | Group::Switch
-                | Group::Trap
-                | Group::TrapDecapped
-                | Group::Color(_)
-                | Group::Ingress(_)
-                | Group::IngressColor(..)
-                | Group::Exit(_),
-            ) => Vec::new(),
-        };
+        let of_role = role_peerings(program, *role);
         if of_role.is_empty() {
             // A VPC the NIC only decapsulates for: software decapsulates it instead.
             if let Role::Switch(vni) | Role::CatchAll(Group::Exit(vni)) = *role {
@@ -1508,10 +1625,10 @@ pub(crate) fn peerings(program: &Program, refused: &[(Role, Error)]) -> Result<E
     Ok(excluded)
 }
 
-/// Program `dev` with what the published ACLs and rate limits allow, and follow them until `stop`
-/// says so.
-///
-/// `fate` is where traffic the NIC lets through goes: the driver's data queues.
+/// Program `dev`'s port until `stop`. Without [`Policy::stamping`], follow the policy published
+/// through `policy`'s readers, in bank A. With it, install each generation the configuration
+/// publisher asks for in its stamp's bank, then turn the selector to it ([`Port::restamp`]), and
+/// confirm. `stamps` tells the port's workers whether its NIC stamps what it receives.
 pub fn run(
     dev: &Dev<'_, Started>,
     port_name: &str,
@@ -1520,8 +1637,6 @@ pub fn run(
     stamps: &concurrency::sync::atomic::AtomicBool,
     stop: &dyn Fn() -> bool,
 ) {
-    let (acls, reader, routing) = (&policy.acls, &policy.rate_limits, &policy.routing);
-    let ingress_reader = &policy.ingress;
     let flows = match TemplateFlows::new(dev) {
         Ok(flows) => flows,
         Err(e) => {
@@ -1529,64 +1644,75 @@ pub fn run(
             return;
         }
     };
-    let stamping = policy
-        .stamping
-        .as_ref()
-        .map(|stamping| (stamping, stamping.register()));
-    let mut port = Port::new(&flows);
-    if let Some((stamping, _)) = &stamping {
-        port = port.stamping(stamping.wanted());
-    }
-    let sync = |port: &mut Port<'_>| {
-        if let Some((stamping, applied)) = &stamping {
-            sync_stamp(port, port_name, stamping, applied);
-        }
-        stamps.store(port.stamps(), concurrency::sync::atomic::Ordering::Release);
+    let round = Round {
+        port_name,
+        policy,
+        fate,
+        stamps,
     };
-    while !stop() {
-        sync(&mut port);
-        let (filter, limits, routes) = (acls.load(), reader.load(), routing.load());
-        let ingress = ingress_reader.load();
-        let destinations = routes.destinations();
-        // The VPCs flow-filter names, and those the ingress policy has rules for (peered or not);
-        // their VTEPs are polled for changes.
-        let vnis: BTreeSet<Vni> = destinations
+    match &policy.stamping {
+        Some(stamping) => run_banked(&flows, &round, stamping, stop),
+        None => run_following(&flows, &round, stop),
+    }
+}
+
+/// What every round of installing on one port shares.
+struct Round<'a> {
+    port_name: &'a str,
+    policy: &'a Policy,
+    fate: &'a TemplateAction,
+    stamps: &'a concurrency::sync::atomic::AtomicBool,
+}
+
+impl Round<'_> {
+    /// The VPCs whose VTEPs matter to `inputs`: those the flow filter names, and those the
+    /// ingress policy has rules for (peered or not).
+    fn vteps(&self, inputs: &crate::Inputs) -> (BTreeSet<Vni>, BTreeMap<Vni, Ipv4Addr>) {
+        let vnis: BTreeSet<Vni> = inputs
+            .routing
+            .destinations()
             .iter()
             .flat_map(|d| [d.src_vni, d.dst_vni])
-            .chain(crate::program::ingress_vpcs(&ingress))
+            .chain(crate::program::ingress_vpcs(&inputs.ingress))
             .collect();
-        let vteps = policy.vteps.vteps(&vnis);
-        let changed = || {
-            stop()
-                || !concurrency::sync::Arc::ptr_eq(&acls.load(), &filter)
-                || !concurrency::sync::Arc::ptr_eq(&reader.load(), &limits)
-                || !concurrency::sync::Arc::ptr_eq(&ingress_reader.load(), &ingress)
-                || !concurrency::sync::Arc::ptr_eq(&routing.load(), &routes)
-                || policy.vteps.vteps(&vnis) != vteps
-        };
-        if !limits.attempt_offloads() {
+        let vteps = self.policy.vteps.vteps(&vnis);
+        (vnis, vteps)
+    }
+
+    /// Install `inputs` with `vteps` into `port`'s target bank; give up if `changed`.
+    fn install(
+        &self,
+        port: &mut Port<'_>,
+        inputs: &crate::Inputs,
+        vteps: &BTreeMap<Vni, Ipv4Addr>,
+        changed: &dyn Fn() -> bool,
+    ) {
+        let port_name = self.port_name;
+        if !inputs.rate_limits.attempt_offloads() {
             info!(
                 "port {port_name}: NIC offload is turned off; software alone enforces the policy"
             );
         }
+        let destinations = inputs.routing.destinations();
         let seen = Seen {
-            filter: &filter,
-            limits: &limits,
-            ingress: &ingress,
+            filter: &inputs.acls,
+            limits: &inputs.rate_limits,
+            ingress: &inputs.ingress,
             destinations: &destinations,
-            vteps: &vteps,
-            decap: policy.decap,
-            decapped_trap: policy.decapped_trap,
+            vteps,
+            decap: self.policy.decap,
+            decapped_trap: self.policy.decapped_trap,
         };
-        // Conservatively stamping while installing, which may add the trap rule: a worker must
+        // Conservatively stamping while installing, which may add the trap rules: a worker must
         // not count this port's queues drained of a generation while it may be stamping one.
-        stamps.store(
-            policy.decap && !port.poisoned(),
+        self.stamps.store(
+            self.policy.decap && !port.poisoned(),
             concurrency::sync::atomic::Ordering::Release,
         );
-        let program = install_policy(&mut port, port_name, &seen, fate, &changed);
-        stamps.store(port.stamps(), concurrency::sync::atomic::Ordering::Release);
-        installed(port_name, &port, program.as_ref(), policy.decap);
+        let program = install_policy(port, port_name, &seen, self.fate, changed);
+        self.stamps
+            .store(port.stamps(), concurrency::sync::atomic::Ordering::Release);
+        installed(port_name, port, program.as_ref(), self.policy.decap);
         // Every peering the flow filter routes, but those an attached VPC's rules are of: what
         // the NIC holds, whatever this round of installing came to.
         let in_nic = port.attached_peerings();
@@ -1596,20 +1722,92 @@ pub fn run(
             .filter(|peering| !in_nic.contains(peering))
             .collect::<BTreeSet<_>>()
             .len();
-        state(port_name, &port, in_software);
+        state(port_name, port, in_software);
+    }
+}
+
+/// Follow the policy `round`'s readers publish, in bank A, until `stop`.
+fn run_following(flows: &TemplateFlows<'_>, round: &Round<'_>, stop: &dyn Fn() -> bool) {
+    let mut port = Port::new(flows);
+    while !stop() {
+        let inputs = crate::Inputs::load(round.policy);
+        let (vnis, vteps) = round.vteps(&inputs);
+        let changed = || {
+            stop()
+                || !crate::Inputs::load(round.policy).same(&inputs)
+                || round.policy.vteps.vteps(&vnis) != vteps
+        };
+        round.install(&mut port, &inputs, &vteps, &changed);
         let mut next_report = clock::deadline(REPORT);
         while !changed() {
-            let next_poll = clock::deadline(POLL);
-            while clock::now() < next_poll {
-                sync(&mut port);
-                std::thread::sleep(STAMP_POLL);
-            }
+            std::thread::sleep(POLL);
             if clock::now() >= next_report {
-                report(port_name, &port);
+                report(round.port_name, &port);
                 next_report = clock::deadline(REPORT);
             }
         }
-        report(port_name, &port);
+        report(round.port_name, &port);
+    }
+}
+
+/// Install each generation `stamping` asks for in its stamp's bank, turn the selector to it, and
+/// confirm, until `stop`. A VTEP change (routing, not a generation) reinstalls the active bank
+/// in place, VPC by VPC, from the same generation's policy.
+fn run_banked(
+    flows: &TemplateFlows<'_>,
+    round: &Round<'_>,
+    stamping: &crate::Stamping,
+    stop: &dyn Fn() -> bool,
+) {
+    let port_name = round.port_name;
+    let applied = stamping.register();
+    let (first, _) = stamping.wanted();
+    let mut port = Port::new(flows).stamping(first);
+    // The generation the active bank holds, and the VTEPs it was installed with.
+    let mut served: Option<(net::packet::Stamp, BTreeMap<Vni, Ipv4Addr>)> = None;
+    let mut next_report = clock::deadline(REPORT);
+    let mut next_poll = clock::now();
+    while !stop() {
+        let (stamp, inputs) = stamping.wanted();
+        let new = served.as_ref().is_none_or(|(served, _)| *served != stamp);
+        // VTEPs are polled every POLL, and at each new generation.
+        let polled = (new || clock::now() >= next_poll).then(|| round.vteps(&inputs));
+        if polled.is_some() {
+            next_poll = clock::deadline(POLL);
+        }
+        let moved = polled
+            .as_ref()
+            .is_some_and(|(_, vteps)| served.as_ref().is_some_and(|(_, v)| v != vteps));
+        if let Some((vnis, vteps)) = polled.filter(|_| new || moved) {
+            port.target(stamp.bank());
+            let changed = || stop() || round.policy.vteps.vteps(&vnis) != vteps;
+            round.install(&mut port, &inputs, &vteps, &changed);
+            if new {
+                match port.restamp(stamp) {
+                    Ok(()) => info!(
+                        "port {port_name}: NIC classifies under {stamp:?}, bank {:?}",
+                        port.active()
+                    ),
+                    // The port is lost: nothing it holds is reachable, so nothing classifies under
+                    // the old generation (unless its root could not be removed, which `lose`
+                    // reports).
+                    Err(e) => error!("port {port_name}: could not turn to {stamp:?}: {e}"),
+                }
+            }
+            round
+                .stamps
+                .store(port.stamps(), concurrency::sync::atomic::Ordering::Release);
+            applied.store(
+                stamp.to_bits(),
+                concurrency::sync::atomic::Ordering::Release,
+            );
+            served = Some((stamp, vteps));
+        }
+        if clock::now() >= next_report {
+            report(port_name, &port);
+            next_report = clock::deadline(REPORT);
+        }
+        std::thread::sleep(STAMP_POLL);
     }
 }
 
@@ -1623,36 +1821,15 @@ fn installed(port_name: &str, port: &Port<'_>, program: Option<&Program>, decap:
             port.installed(|role| matches!(role, Role::Ingress(_))),
             port.installed(|role| matches!(role, Role::Deny(_))),
             port.installed(|role| matches!(role, Role::Police(_))),
-            port.vpcs.len(),
+            port.vpcs[bank(port.active)].len(),
         );
     }
-    if decap && program.is_some() && !port.vpcs.is_empty() {
+    if decap && program.is_some() && !port.vpcs[bank(port.active)].is_empty() {
         info!(
             "port {port_name}: NIC decapsulating the VXLAN of {} VPC(s)",
-            port.vpcs.len()
+            port.vpcs[bank(port.active)].len()
         );
     }
-}
-
-/// Restamp `port`'s trap rule if the publisher wants another stamp, and confirm it in `applied`.
-fn sync_stamp(
-    port: &mut Port<'_>,
-    port_name: &str,
-    stamping: &crate::Stamping,
-    applied: &concurrency::sync::atomic::AtomicU8,
-) {
-    let wanted = stamping.wanted();
-    if port.stamp() != wanted
-        && let Err(e) = port.restamp(wanted)
-    {
-        // The port is lost: nothing it holds is reachable, so nothing stamps the old generation
-        // (unless its root could not be removed, which `lose` reports).
-        error!("port {port_name}: the trap rule could not be restamped: {e}");
-    }
-    applied.store(
-        wanted.to_bits(),
-        concurrency::sync::atomic::Ordering::Release,
-    );
 }
 
 /// The policy as seen together: the ACLs, the rate limits, the ingress policy, where flow-filter
@@ -1690,6 +1867,7 @@ fn planned(
     excluded: &Exclusions,
     seen: &Seen<'_>,
     fate: &TemplateAction,
+    bank: Bank,
 ) -> Result<Plan, Error> {
     Ok(super::Plan::new(
         program,
@@ -1697,7 +1875,8 @@ fn planned(
         fate,
         seen.decap,
     )?
-    .trapping_decapped_at(seen.decapped_trap))
+    .trapping_decapped_at(seen.decapped_trap)
+    .in_bank(bank))
 }
 
 /// Compile the policy into a program, and reconcile `port` with it: the program installed, or
@@ -1766,7 +1945,7 @@ fn install_policy(
             // Software may already enforce a policy newer than the NIC's: detach the VPCs this
             // program changes before compiling again, so that a policy republished faster than
             // it compiles never leaves the NIC enforcing an old one.
-            let detached = match planned(&program, &excluded, seen, fate) {
+            let detached = match planned(&program, &excluded, seen, fate, port.target) {
                 Ok(plan) => port.detach_changed(&plan),
                 Err(_) => port.clear(),
             };
@@ -1781,7 +1960,7 @@ fn install_policy(
                 info!("port {port_name}: the {peering} stays in software: {origin}: {refusal:?}");
             }
         }
-        let outcome = planned(&program, &excluded, seen, fate).and_then(|plan| {
+        let outcome = planned(&program, &excluded, seen, fate, port.target).and_then(|plan| {
             let observed = port.observe();
             port.reconcile(&plan, observed)
         });
@@ -1846,7 +2025,7 @@ fn state(port_name: &str, port: &Port<'_>, in_software: usize) {
     #[allow(clippy::cast_precision_loss)] // counts far below 2^52
     {
         metrics::gauge!("nic_offload_vpcs", "port" => port_label.clone())
-            .set(port.vpcs.len() as f64);
+            .set(port.vpcs[bank(port.active)].len() as f64);
         metrics::gauge!("nic_offload_peerings_in_software", "port" => port_label.clone())
             .set(in_software as f64);
     }

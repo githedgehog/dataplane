@@ -125,6 +125,20 @@ impl Pattern<()> {
 }
 
 impl<Pos> Pattern<Pos> {
+    /// Also match TAG register `index` (written earlier in the pipeline, by
+    /// [`TemplateAction::TagPerRule`](super::TemplateAction::TagPerRule)) against `value`, every
+    /// bit. Metadata, not a header: the position stays.
+    #[must_use]
+    pub fn tag(self, index: u8, value: u32) -> Pattern<Pos> {
+        let spec = dpdk_sys::rte_flow_item_tag { data: value, index };
+        // The index is fixed by the template, the value by each rule.
+        let mask = dpdk_sys::rte_flow_item_tag {
+            data: u32::MAX,
+            index: u8::MAX,
+        };
+        self.push(MatchItem::Tag(spec, mask))
+    }
+
     fn push<Next>(mut self, item: MatchItem) -> Pattern<Next> {
         self.shapes.push(item.shape());
         self.items.push(item);

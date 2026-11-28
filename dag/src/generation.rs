@@ -245,8 +245,11 @@ pub struct Generations<T: Send + Sync> {
     policy: Policy,
     /// Real hardware's selector, if any: asked at each flip to stamp the newest generation, and
     /// whether it does yet (see [`Generations::with_hardware`]).
-    hardware: Option<Box<dyn Fn(Stamp) -> bool>>,
+    hardware: Option<Hardware<T>>,
 }
+
+/// Real hardware's selector: asked to classify under a generation, answers whether it does yet.
+type Hardware<T> = Box<dyn Fn(&Snapshot<T>) -> bool>;
 
 /// How workers acknowledge a flip.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -332,13 +335,15 @@ impl<T: Send + Sync> Generations<T> {
         }
     }
 
-    /// The same, flipping real hardware too: at each flip, `stamp` is asked to have hardware stamp
-    /// the newest generation, and answers whether it does yet. The flip waits until it does
-    /// ([`Wait::NotStamped`]): a flip hardware has not made would let idle workers acknowledge,
-    /// and the previous generation retire, while packets are still stamped with it.
+    /// The same, flipping real hardware too: at each flip, `classify` is asked to have hardware
+    /// classify under the newest generation (its stamp, and its tables, which hardware compiles
+    /// into the generation's bank first), and answers whether it does yet. The flip waits until it
+    /// does ([`Wait::NotStamped`]): a flip hardware has not made would let idle workers
+    /// acknowledge, and the previous generation retire, while packets are still classified under
+    /// it.
     #[must_use]
-    pub fn with_hardware(mut self, stamp: impl Fn(Stamp) -> bool + 'static) -> Self {
-        self.hardware = Some(Box::new(stamp));
+    pub fn with_hardware(mut self, classify: impl Fn(&Snapshot<T>) -> bool + 'static) -> Self {
+        self.hardware = Some(Box::new(classify));
         self
     }
 
@@ -435,7 +440,7 @@ impl<T: Send + Sync> Generations<T> {
             return Err(Wait::NotObserved);
         }
         if let Some(hardware) = &self.hardware
-            && !hardware(state.newest.stamp())
+            && !hardware(&state.newest)
         {
             return Err(Wait::NotStamped);
         }
