@@ -71,7 +71,12 @@ pub const TEST_ONLY_BYTES: usize = if cfg!(feature = "test_meta") {
 };
 
 /// A parsed Ethernet packet. Use [`Packet::deep_copy`] to copy its buffer.
+///
+/// Aligned to a cache line, so that every packet of a burst has its fields at the same line
+/// offsets; the size budget and its reasons are at the assertion in
+/// `dataplane/src/drivers/dpdk/worker.rs`.
 #[derive(Debug)]
+#[repr(align(64))]
 pub struct Packet<Buf: PacketBufferMut> {
     headers: Headers,
     payload: Buf,

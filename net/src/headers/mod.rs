@@ -82,9 +82,8 @@ pub struct Headers {
     /// The headers quoted by an ICMP error, or the LLDP data unit of an LLDP frame: never both.
     ///
     /// Rare, and much larger than the headers in front of them, so boxed, and in one box: a
-    /// forwarded packet should not carry the cost of fields it never uses. Sharing the slot also
-    /// keeps a [`Packet`](crate::packet::Packet) at 256 bytes, the most the compiler copies
-    /// inline; one byte more and every move of a packet becomes a call to `memmove`.
+    /// forwarded packet should not carry the cost of fields it never uses, and a
+    /// [`Packet`](crate::packet::Packet) stays within its budget (see `Packet`).
     #[builder(setter(custom))]
     pub(in crate::headers) tail: Option<Box<Tail>>,
     /// What changed since parsing; see [`track`].

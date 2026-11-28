@@ -34,17 +34,25 @@ use super::idle::Idle;
 use super::port::PortQueues;
 use crate::drivers::disposition::Disposition;
 
-// The compiler copies up to 256 bytes inline and calls `memmove` beyond that: when packets moved by
-// value out of the burst to transmit, 8 bytes more (264) cost some 7 % per packet on the local BF-3
-// (2026-11-15), in the call and in the store-to-load forwarding stalls of reading a packet just
-// copied that way. `PacketMeta::syn_proxy` has since taken those 8 bytes, but packets no longer
-// move on the hot path: they are parsed in their slot and transmitted from it
-// (`Packet::drain_in_place`). The limit stays at 264, as a ceiling on what a packet costs in cache
-// and on any move still to come. Test-only metadata does not count.
+// A packet's budget is five cache lines (320 bytes), and `Packet` is aligned to a line
+// (`#[repr(align(64))]`). Why (2026-11-27):
+// - Past 256 bytes the line count is what costs, not the bytes. A 264-byte packet spans five lines
+//   wherever it starts, so 264 already paid for the fifth line; 320 costs no more, and gives the
+//   room 264 lacked (`PacketMeta` had none left).
+// - Aligned, every packet of a burst has its fields at the same line offsets: a hot field never
+//   straddles two lines, and what a stage touches is the same lines for every packet.
+// - The inline-copy cliff (256: the compiler calls `memmove` beyond it; 8 bytes over cost some 7 %
+//   per packet on the local BF-3, 2026-11-15, when packets moved by value to transmit) is not
+//   worth chasing with `#[inline(always)]`: packets no longer move on the hot path (parsed in
+//   their slot, transmitted from it: `Packet::drain_in_place`), and overruling the compiler's
+//   heuristics everywhere would not stay fixed.
+// - Back to four lines means 256 bytes or less; the room is in the TCP header, whose options sit
+//   inline (40 bytes). See `notes/match-action-dag/slice1-step4/RESULTS.md`, packet size.
+// Test-only metadata does not count.
 const _: () = assert!(
     core::mem::size_of::<net::packet::Packet<Mbuf<'static>>>() - net::packet::TEST_ONLY_BYTES
-        <= 264,
-    "Packet<Mbuf> outgrew 264 bytes; see the comment above this assert"
+        <= 320,
+    "Packet<Mbuf> outgrew five cache lines; see the comment above this assert"
 );
 
 #[cfg(all(test, not(feature = "shuttle")))]
