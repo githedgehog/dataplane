@@ -438,6 +438,9 @@ pub struct Program {
     pub ingress: Vec<IngressRule>,
     /// The peerings left in software, with what of each no NIC may enforce.
     pub refused: Vec<(Peering, Origin, Refusal)>,
+    /// The ACLs the rule planner takes whole (`crate::acl`): their peerings' rules are not in
+    /// `denies`.
+    pub acls: Vec<crate::acl::PlannedAcl>,
     /// Other peers' destinations that must bypass broader rules from this source VPC.
     /// Rules at the same or a longer prefix length precede these passes; see [`DenyRule::level`].
     pub passes: BTreeMap<Vni, BTreeSet<Prefix>>,
@@ -596,7 +599,7 @@ fn port(spec: RangeSpec<KeyPort>, ranges: bool) -> Result<Option<PortRange>, Ref
 }
 
 /// The fields of a typed rule, whichever table it is from: rate limits and ACLs match alike.
-struct Fields<I: FixedSize> {
+pub(crate) struct Fields<I: FixedSize> {
     proto: MaskSpec<NextHeader>,
     src_vni: ExactSpec<Vni>,
     source: PrefixSpec<I>,
@@ -673,7 +676,7 @@ fn widen<I: FixedSize>(rule: &Fields<I>, prefix: impl Fn(PrefixSpec<I>) -> Prefi
 }
 
 /// Lower one typed rule's fields; port ranges only if `ranges`.
-fn lower<I: FixedSize>(
+pub(crate) fn lower<I: FixedSize>(
     rule: &Fields<I>,
     prefix: impl Fn(PrefixSpec<I>) -> Prefix,
     ranges: bool,
@@ -740,8 +743,9 @@ impl Program {
                     .push((peering, Origin::AclDefault(peering), Refusal::DefaultDeny));
             }
         }
-        c.denies(acls.v4(), false, |p| Prefix::V4(p.value, p.len));
-        c.denies(acls.v6(), true, |p| Prefix::V6(p.value, p.len));
+        let (planned_acls, planned) = crate::acl::planned(acls, destinations);
+        c.denies(acls.v4(), false, &planned, |p| Prefix::V4(p.value, p.len));
+        c.denies(acls.v6(), true, &planned, |p| Prefix::V6(p.value, p.len));
         let classifier = limits.classifier();
         c.limits(limits, classifier.v4(), |p| Prefix::V4(p.value, p.len));
         c.limits(limits, classifier.v6(), |p| Prefix::V6(p.value, p.len));
@@ -778,6 +782,10 @@ impl Program {
         }
         let mut program = Program {
             denies,
+            acls: planned_acls
+                .into_iter()
+                .filter(|acl| !left(acl.peering))
+                .collect(),
             refused: c.refused,
             ..Program::default()
         };
@@ -984,10 +992,15 @@ impl Compilation {
         &mut self,
         rows: &[RuleRow<AclKey<I>, LookupResult>],
         v6: bool,
+        planned: &BTreeSet<Peering>,
         prefix: impl Fn(PrefixSpec<I>) -> Prefix + Copy,
     ) {
         for (at, row) in rows.iter().enumerate() {
             let peering = Peering::new(row.rule.src_vni.value, row.rule.dst_vni.value);
+            // The rule planner takes this peering's ACL whole.
+            if planned.contains(&peering) {
+                continue;
+            }
             let origin = Origin::Acl { v6, row: at };
             // Logged allows also need software: a NIC meter could otherwise drop them before
             // the ACL filter records its verdict. Keep both directions of the peering there.

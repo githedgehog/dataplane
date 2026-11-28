@@ -1207,6 +1207,7 @@ fn reconcile_scenarios() {
         rules,
         refused: Vec::new(),
         ingress: Vec::new(),
+        acls: Vec::new(),
         passes: std::collections::BTreeMap::new(),
     };
     let deny = |src: u32, dst: u8| crate::program::DenyRule {

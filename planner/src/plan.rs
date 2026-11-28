@@ -147,6 +147,26 @@ impl<A> Entries<A> {
             })
     }
 
+    /// The part values a packed key stands for: [`Entries::pack`]'s inverse, a field's value
+    /// back at its top bits (the rest zero), a register's as it is.
+    #[must_use]
+    pub fn unpack(&self, key: u128) -> Vec<u128> {
+        let mut key = key;
+        let mut values: Vec<u128> = self
+            .parts
+            .iter()
+            .rev()
+            .map(|&(shift, bits, _)| {
+                let max = crate::rules::max_of(u8::try_from(bits).unwrap_or(128));
+                let v = key & max;
+                key = if bits >= 128 { 0 } else { key >> bits };
+                if shift >= 128 { 0 } else { v << shift }
+            })
+            .collect();
+        values.reverse();
+        values
+    }
+
     /// The step for `values`, if an entry has it.
     #[must_use]
     pub fn get(&self, values: &[u128]) -> Option<&Step<A>> {

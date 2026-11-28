@@ -19,6 +19,7 @@
 //! Offload defaults on; `gateway.alpha.githedgehog.com/attempt-offloads: "false"` disables it.
 //! Failed offload probes fall back to software. Currently supports mlx5 only.
 
+pub mod acl;
 pub mod mlx5;
 pub mod model;
 pub mod program;

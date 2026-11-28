@@ -871,3 +871,36 @@ fn port_ranges() {
         }
     }
 }
+
+/// Unpacking a packed key gives back each part's value: a field's at its top bits, a
+/// register's as it is.
+#[test]
+fn entries_unpack_what_they_pack() {
+    use crate::plan::{Entries, Part};
+    use crate::rules::Field;
+    let fields = [
+        Field {
+            name: "src",
+            width: 32,
+        },
+        Field {
+            name: "dport",
+            width: 16,
+        },
+    ];
+    let key = [
+        Part::Field { field: 0, len: 24 },
+        Part::Reg(1),
+        Part::Field { field: 1, len: 16 },
+    ];
+    let entries: Entries<()> = Entries::for_key(&key, &fields);
+    let mut rng = crate::generate::Lcg::new(7);
+    for _ in 0..10_000 {
+        let values = [
+            u128::from(rng.below(1 << 32)) & 0xffff_ff00,
+            u128::from(rng.below(1 << 24)),
+            u128::from(rng.below(1 << 16)),
+        ];
+        assert_eq!(entries.unpack(entries.pack(&values)), values);
+    }
+}

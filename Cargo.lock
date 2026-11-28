@@ -2145,6 +2145,7 @@ dependencies = [
  "dataplane-match-action",
  "dataplane-net",
  "dataplane-pipeline",
+ "dataplane-planner",
  "dataplane-policer",
  "dataplane-rate-limit",
  "dataplane-rekon",
