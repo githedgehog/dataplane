@@ -13,8 +13,9 @@
 //!   (`r + 1`: TAG 0 holds the bank). Each entry is a rule; the level's miss, a catch-all behind
 //!   them.
 //! - **A step** writes its registers (`TagPerRule`), then jumps to its next level, drops (deny:
-//!   counted), or goes on as the ACL stage would (pass: the VPC's rate limits, or delivery).
-//!   Registers written at the end are dead, and not written.
+//!   uncounted, as counters are per rule and a plan has millions of entries), or goes on as the
+//!   ACL stage would (pass: the VPC's rate limits, or delivery). Registers written at the end are
+//!   dead, and not written.
 
 use dpdk::flow::template::{Complete, Pattern, TemplateAction};
 use dpdk::flow::{EthMatch, Ipv4Match, Ipv4Prefix, TcpMatch, UdpMatch};
@@ -179,7 +180,12 @@ impl Plan {
                 args.push(Arg::Jump(Group::Acl(vni, proto, *level as u16)));
                 (self.actions_template(actions), args)
             }
-            Then::Done(AclVerdict::Deny) => (super::DISCARD, Vec::new()),
+            // Uncounted: a counter per entry would say nothing of the ACL's rules, and each
+            // takes one of the port's counters (`RESOURCES`), which a large plan runs out of.
+            Then::Done(AclVerdict::Deny) => (
+                self.actions_template(vec![TemplateAction::Drop]),
+                Vec::new(),
+            ),
             Then::Done(AclVerdict::Pass) => after.clone(),
         }
     }

@@ -32,6 +32,8 @@ acl = { workspace = true, features = ["reference"] }
 acl-filter = { workspace = true, features = ["reference"] }
 flow-filter = { workspace = true, features = ["reference"] }
 bolero = { workspace = true, features = ["std"] }
+k8s-intf = { workspace = true, default-features = false }
+serde_yaml_ng = { workspace = true }
 net = { workspace = true, features = ["test_buffer"] }
 pipeline = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["fmt"] }
