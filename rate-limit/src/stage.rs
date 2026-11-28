@@ -41,21 +41,38 @@ impl Local {
     }
 }
 
+/// This worker's leases and drop counts for one published configuration.
+#[derive(Debug)]
+struct Leases<C> {
+    /// The rules they were made for.
+    limits: Arc<RateLimits<C>>,
+    /// One lease per meter component, shared by every matching rule on this worker.
+    locals: Vec<[Option<Local>; 2]>,
+    /// The count each drop rule adds to, by rule index: resolved when the configuration is, so a
+    /// flood's drops cost no lookup.
+    rule_drops: Vec<Option<Arc<Dropped>>>,
+}
+
 /// A worker's policing stage, following the rules published through a [`RateLimitReader`].
 ///
 /// See the [rate-limit configuration](config::external::overlay::ratelimit) for matching and action
 /// order, and [`policer::SharedMeter`] for token leasing.
+///
+/// It keeps leases for the two configurations it last served: while a generation flip drains,
+/// a burst can hold packets of both (`dag::generation`), and the stage runs once for each. With
+/// one set it rebuilt every lease twice per such burst, and a meter whose profile changed between
+/// them lost its lease's tokens each time.
 pub struct RateLimiter<C> {
     reader: RateLimitReader<C>,
-    /// The rules `locals` was made for.
-    current: Option<Arc<RateLimits<C>>>,
-    /// One lease per meter component, shared by every matching rule on this worker.
-    locals: Vec<[Option<Local>; 2]>,
+    /// The leases of the two configurations last served.
+    sets: [Option<Leases<C>>; 2],
+    /// Which of `sets` was served last.
+    current: usize,
     /// This worker's counts of what drop rules dropped, by source VPC, across configurations.
     dropped: HashMap<Vni, Arc<Dropped>>,
-    /// The count each drop rule of the current configuration adds to, by rule index: resolved
-    /// when the configuration is, so a flood's drops cost no lookup.
-    rule_drops: Vec<Option<Arc<Dropped>>>,
+    /// Leases made, for tests.
+    #[cfg(test)]
+    pub(crate) leases_made: usize,
 }
 
 impl<C> RateLimiter<C> {
@@ -64,10 +81,11 @@ impl<C> RateLimiter<C> {
     pub fn new(reader: RateLimitReader<C>) -> Self {
         RateLimiter {
             reader,
-            current: None,
-            locals: Vec::new(),
+            sets: [None, None],
+            current: 0,
             dropped: HashMap::new(),
-            rule_drops: Vec::new(),
+            #[cfg(test)]
+            leases_made: 0,
         }
     }
 
@@ -77,21 +95,27 @@ impl<C> RateLimiter<C> {
         &self.reader
     }
 
-    /// Follow `limits`, keeping this worker's lease and counts of every meter that carries over.
-    fn follow(&mut self, limits: &Arc<RateLimits<C>>) {
-        if self
-            .current
-            .as_ref()
-            .is_some_and(|current| Arc::ptr_eq(current, limits))
-        {
+    /// Serve `limits`: the leases already made for it, or new ones in place of the set served
+    /// longest ago, keeping that set's lease and counts of every meter that carries over.
+    pub(crate) fn follow(&mut self, limits: &Arc<RateLimits<C>>) {
+        let serves = |set: &Option<Leases<C>>| {
+            set.as_ref()
+                .is_some_and(|set| Arc::ptr_eq(&set.limits, limits))
+        };
+        if serves(&self.sets[self.current]) {
             return;
         }
-        let mut previous: Vec<Local> = std::mem::take(&mut self.locals)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .collect();
-        self.locals = limits
+        let other = 1 - self.current;
+        if serves(&self.sets[other]) {
+            self.current = other;
+            return;
+        }
+        let mut previous: Vec<Local> = self.sets[other].take().map_or_else(Vec::new, |set| {
+            set.locals.into_iter().flatten().flatten().collect()
+        });
+        #[cfg(test)]
+        let mut made = 0;
+        let locals = limits
             .meters
             .iter()
             .map(|meter| {
@@ -106,16 +130,28 @@ impl<C> RateLimiter<C> {
                             if !Arc::ptr_eq(&local.enforcement, enforcement) {
                                 local.meter = enforcement.meter.local();
                                 local.enforcement = Arc::clone(enforcement);
+                                #[cfg(test)]
+                                {
+                                    made += 1;
+                                }
                             }
                             local
                         } else {
+                            #[cfg(test)]
+                            {
+                                made += 1;
+                            }
                             Local::new(enforcement)
                         }
                     })
                 })
             })
             .collect();
-        self.rule_drops = limits
+        #[cfg(test)]
+        {
+            self.leases_made += made;
+        }
+        let rule_drops = limits
             .rules
             .iter()
             .map(|rule| match (rule.action, rule.from) {
@@ -127,7 +163,19 @@ impl<C> RateLimiter<C> {
                 _ => None,
             })
             .collect();
-        self.current = Some(Arc::clone(limits));
+        self.sets[other] = Some(Leases {
+            limits: Arc::clone(limits),
+            locals,
+            rule_drops,
+        });
+        self.current = other;
+    }
+
+    /// The leases of the configuration served now ([`RateLimiter::follow`]).
+    fn served(&mut self) -> &mut Leases<C> {
+        self.sets[self.current]
+            .as_mut()
+            .unwrap_or_else(|| unreachable!("followed before serving"))
     }
 }
 
@@ -156,10 +204,11 @@ impl<C: Classify> RateLimiter<C> {
         now: Instant,
     ) -> Option<DoneReason> {
         let index = limits.classifier.classify_with(packet, vpcs)?;
+        let leases = self.served();
         let meter_index = match limits.rules[index].action {
             Action::Police(meter) => meter,
             Action::Drop => {
-                if let Some(Some(dropped)) = self.rule_drops.get(index) {
+                if let Some(Some(dropped)) = leases.rule_drops.get(index) {
                     dropped.add();
                 }
                 return Some(DoneReason::IngressDropped);
@@ -173,7 +222,7 @@ impl<C: Classify> RateLimiter<C> {
             let Some(component) = meter.components[i].as_ref() else {
                 continue;
             };
-            let Some(local) = self.locals[meter_index][i].as_mut() else {
+            let Some(local) = leases.locals[meter_index][i].as_mut() else {
                 continue;
             };
             color = local.meter.color(now, unit.cost(bytes), color);

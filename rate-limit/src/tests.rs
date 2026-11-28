@@ -737,3 +737,57 @@ fn the_typed_stage_polices_as_the_legacy_one() {
             .any(|p| p.get_done() == Some(DoneReason::RateLimited))
     );
 }
+
+/// While a generation flip drains, a worker serves two configurations, alternating within a burst:
+/// once it has leases for both, switching between them makes none (it rebuilt them all at every
+/// switch, losing a changed meter's leased tokens each time). A third configuration takes the place
+/// of the one served longest ago, keeping the lease of each meter that carries over unchanged.
+#[test]
+fn alternating_between_two_configurations_keeps_both_sets_of_leases() {
+    let first = configuration(
+        vec![("web", meter(2, 1)), ("db", meter(4, 0))],
+        vec![rule("10.1.1.0/24", "web"), rule("10.1.2.0/24", "db")],
+    );
+    let w = writer(&first, 1);
+    let a = w.load();
+    // "web" changes profile (a new meter); "db" carries over unchanged.
+    w.apply(
+        &configuration(
+            vec![("web", meter(5, 0)), ("db", meter(4, 0))],
+            vec![rule("10.1.1.0/24", "web"), rule("10.1.2.0/24", "db")],
+        ),
+        Backend::Reference,
+    )
+    .unwrap();
+    let b = w.load();
+    let mut stage = RateLimiter::new(w.reader());
+    stage.follow(&a);
+    assert_eq!(stage.leases_made, 2, "one lease per meter component");
+    stage.follow(&b);
+    assert_eq!(stage.leases_made, 4, "the second set: its own leases");
+    for _ in 0..8 {
+        stage.follow(&a);
+        stage.follow(&b);
+    }
+    assert_eq!(stage.leases_made, 4, "switching made leases");
+    // A third configuration replaces the first set (served longest ago): its unchanged "db" lease
+    // carries over, "web" (changed again) gets a new one.
+    w.apply(
+        &configuration(
+            vec![("web", meter(7, 0)), ("db", meter(4, 0))],
+            vec![rule("10.1.1.0/24", "web"), rule("10.1.2.0/24", "db")],
+        ),
+        Backend::Reference,
+    )
+    .unwrap();
+    stage.follow(&w.load());
+    assert_eq!(
+        stage.leases_made, 5,
+        "only the changed meter's lease is new"
+    );
+    stage.follow(&b);
+    assert_eq!(
+        stage.leases_made, 5,
+        "the second configuration's set was kept"
+    );
+}
