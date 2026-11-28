@@ -8081,16 +8081,16 @@ mod admission_frame {
                 AclFilterContext::try_from(overlay).expect("a validated overlay lowers to acls"),
             ),
             accepted: Some(accepted.reader().load()),
-            vpcs: super::super::admission::Vpcs::new(vnis(overlay)),
+            peers: super::super::admission::Peers::new(peers(overlay)),
         }
     }
 
-    /// Every VPC's VNI, as management hands them to the admission publisher.
-    fn vnis(overlay: &ValidatedOverlay) -> Vec<Vni> {
+    /// Every VPC's VNI and its peers', as management hands them to the admission publisher.
+    fn peers(overlay: &ValidatedOverlay) -> Vec<(Vni, Vec<Vni>)> {
         overlay
             .vpc_table()
             .values()
-            .map(config::external::overlay::vpc::ValidatedVpc::vni)
+            .map(|vpc| (vpc.vni(), vpc.peer_vnis().collect()))
             .collect()
     }
 
@@ -8370,7 +8370,7 @@ mod admission_frame {
                                 peering: tables
                                     .accepted
                                     .unwrap_or_else(|| Arc::new(RateLimits::empty())),
-                                vpcs: vnis(overlay),
+                                peers: peers(overlay),
                             })
                             .expect("the publisher's end");
                         std::thread::sleep(std::time::Duration::from_millis(5));

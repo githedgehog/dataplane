@@ -80,8 +80,8 @@ pub(crate) struct AdmissionTables {
     pub(crate) flow_filter: Arc<FlowFilterContext>,
     pub(crate) acl: Arc<AclFilterContext>,
     pub(crate) accepted: Option<Arc<RateLimits<PeeringRules>>>,
-    /// The VPCs, as trap edges intern them.
-    pub(crate) vpcs: Vpcs,
+    /// Each VPC's peers, as trap edges number them.
+    pub(crate) peers: Peers,
 }
 
 /// The admission slice's trap targets: static ids (TRAP-RESUME §4), each where hardware may
@@ -107,42 +107,51 @@ pub(crate) mod node {
     pub(crate) const ALL: [NonZero<u8>; 4] = [PRE, ACL, ACCEPTED, EXPORT];
 }
 
-/// The VPCs of one generation, numbered for trap edges: a destination VPC is a 10-bit id there,
-/// valid under the packet's generation only (its stamp says which). Interning is compiler state
-/// (TRAP-RESUME §3), per generation; the ids need not be stable across generations, since a
-/// trap is always decoded under the generation it was encoded under.
+/// Each VPC's peers in one generation, numbered for trap edges: a destination VPC is a 10-bit
+/// id there, its rank among its source VPC's peers (the source VPC is known from decapsulation),
+/// valid under the packet's generation only (its stamp says which). This bounds peers per VPC,
+/// not VPCs: a VPC with more peers than ids keeps the rest off the trap edges past the flow
+/// filter, which can't be cut there for it (R4, load time). Numbering is compiler state
+/// (TRAP-RESUME §3), per generation; ids need not be stable across generations, since a trap is
+/// always decoded under the generation it was encoded under.
 #[derive(Debug, Default)]
-pub(crate) struct Vpcs(Vec<Vni>);
+pub(crate) struct Peers(std::collections::HashMap<Vni, Vec<Vni>>);
 
-impl Vpcs {
-    /// Ids are 1..=MAX; 0 is no VPC. A configuration with more VPCs keeps the rest off the
-    /// trap edges past the flow filter: those can't be cut there (R4, load time).
+impl Peers {
+    /// Ids are 1..=MAX; 0 is no VPC.
     const MAX: usize = (1 << Routed::DST_BITS) - 1;
 
-    pub(crate) fn new(vnis: impl IntoIterator<Item = Vni>) -> Self {
-        let mut vnis: Vec<Vni> = vnis.into_iter().collect();
-        vnis.sort_unstable();
-        vnis.dedup();
-        Vpcs(vnis)
+    pub(crate) fn new(peers: impl IntoIterator<Item = (Vni, Vec<Vni>)>) -> Self {
+        Peers(
+            peers
+                .into_iter()
+                .map(|(vpc, mut peers)| {
+                    peers.sort_unstable();
+                    peers.dedup();
+                    (vpc, peers)
+                })
+                .collect(),
+        )
     }
 
-    fn id(&self, vpcd: VpcDiscriminant) -> Option<u16> {
-        let VpcDiscriminant::VNI(vni) = vpcd;
-        let k = self.0.binary_search(&vni).ok()?;
+    fn id(&self, src: VpcDiscriminant, dst: VpcDiscriminant) -> Option<u16> {
+        let (VpcDiscriminant::VNI(src), VpcDiscriminant::VNI(dst)) = (src, dst);
+        let k = self.0.get(&src)?.binary_search(&dst).ok()?;
         (k < Self::MAX).then(|| u16::try_from(k + 1).ok()).flatten()
     }
 
-    fn get(&self, id: u16) -> Option<VpcDiscriminant> {
+    fn get(&self, src: VpcDiscriminant, id: u16) -> Option<VpcDiscriminant> {
+        let VpcDiscriminant::VNI(src) = src;
         let k = usize::from(id).checked_sub(1)?;
         (k < Self::MAX)
-            .then(|| self.0.get(k))
+            .then(|| self.0.get(&src)?.get(k))
             .flatten()
             .map(|vni| VpcDiscriminant::VNI(*vni))
     }
 }
 
 /// The flow filter's verdict, as the trap edges past it carry it in 15 bits: the destination
-/// VPC ([`Vpcs`] id, 0 for none) above five flags, the NAT requirements and forced tracking.
+/// VPC ([`Peers`] id, 0 for none) above five flags, the NAT requirements and forced tracking.
 /// What else the flow filter and the ACL leave on a packet is recomputed from the bytes on entry
 /// (pure replays, TRAP-RESUME Q6): the pre-NAT flow key, the opening TCP flags.
 struct Routed;
@@ -151,11 +160,11 @@ impl Routed {
     const DST_BITS: u32 = 10;
     const FLAGS: u32 = 5;
 
-    /// What the edge carries for `meta`, under `vpcs`; `None` if its VPC has no id.
-    fn encode(meta: &PacketMeta, vpcs: &Vpcs) -> Option<u16> {
+    /// What the edge carries for `meta`, under `peers`; `None` if its destination VPC has no id.
+    fn encode(meta: &PacketMeta, peers: &Peers) -> Option<u16> {
         let dst = match meta.dst_vpcd {
             None => 0,
-            Some(dst) => vpcs.id(dst)?,
+            Some(dst) => peers.id(meta.src_vpcd?, dst)?,
         };
         let flags = [
             meta.requires_masquerade(),
@@ -175,16 +184,19 @@ impl Routed {
     ///
     /// # Errors
     ///
-    /// For an id with no VPC: a lowering bug.
+    /// For an id with no VPC among the source VPC's peers, or no source VPC: a lowering bug.
     fn decode(
         payload: u16,
-        vpcs: &Vpcs,
+        peers: &Peers,
         meta: &mut PacketMeta,
     ) -> Result<Option<VpcDiscriminant>, Undecodable> {
         let id = payload >> Self::FLAGS;
         let dst = match id {
             0 => None,
-            id => Some(vpcs.get(id).ok_or(Undecodable)?),
+            id => {
+                let src = meta.src_vpcd.ok_or(Undecodable)?;
+                Some(peers.get(src, id).ok_or(Undecodable)?)
+            }
         };
         let flag = |k: u32| payload & (1 << k) != 0;
         meta.set_masquerade(flag(0));
@@ -201,16 +213,17 @@ struct Undecodable;
 
 const _: () = assert!(Routed::DST_BITS + Routed::FLAGS == Mark::PAYLOAD_BITS);
 
-/// The payload of `node`'s trap edge for a packet with `meta`, under `vpcs`.
+/// The payload of `node`'s trap edge for a packet with `meta`, under `peers`.
 ///
 /// # Panics
 ///
-/// If the packet's VPC has no id: a cut the lowering would have refused (emulation only).
-fn edge_payload(node: NonZero<u8>, meta: &PacketMeta, vpcs: &Vpcs) -> u16 {
+/// If the packet's destination VPC has no id: a cut the lowering would have refused (emulation
+/// only).
+fn edge_payload(node: NonZero<u8>, meta: &PacketMeta, peers: &Peers) -> u16 {
     if node == self::node::PRE {
         0
     } else {
-        Routed::encode(meta, vpcs).unwrap_or_else(|| {
+        Routed::encode(meta, peers).unwrap_or_else(|| {
             unreachable!("a VPC beyond the trap edge's ids, cut past the flow filter")
         })
     }
@@ -283,7 +296,7 @@ impl Source for Current {
             flow_filter: self.flow_filter.load(),
             acl: self.acl.load(),
             accepted: self.accepted.as_ref().map(RateLimitReader::load),
-            vpcs: Vpcs::default(),
+            peers: Peers::default(),
         };
         Tables::only(self.snapshot.insert(Snapshot::new(0, Bank::A, tables)))
     }
@@ -342,7 +355,7 @@ impl From<mgmt::AdmissionUpdate> for AdmissionTables {
             flow_filter: update.flow_filter,
             acl: update.acl,
             accepted: Some(update.peering),
-            vpcs: Vpcs::new(update.vpcs),
+            peers: Peers::new(update.peers),
         }
     }
 }
@@ -550,14 +563,14 @@ where
     burst.per_generation(
         sel,
         tables,
-        |t| &t.vpcs,
-        |burst, sel, vpcs| {
+        |t| &t.peers,
+        |burst, sel, peers| {
             let mut routed = Emit::<S, Assign<kind::DstVpc>>::new();
             let mut bad = Drops::none();
             for i in sel {
                 let packet = burst.packet_mut(&i);
                 let payload = packet.meta().trap().map_or(0, Trap::payload);
-                match Routed::decode(payload, vpcs, packet.meta_mut()) {
+                match Routed::decode(payload, peers, packet.meta_mut()) {
                     Ok(dst) => {
                         FlowFilter::keep_flow_key(packet);
                         routed.push(burst, i, dst);
@@ -608,15 +621,18 @@ where
     let out = burst.per_generation(
         out,
         tables,
-        |t| &t.vpcs,
-        |burst, sel, vpcs| {
+        |t| &t.peers,
+        |burst, sel, peers| {
             let mut left = Emit::<S, Keep>::new();
             for i in sel {
                 let meta = burst.packet(&i).meta();
                 let stamp = meta
                     .stamp()
                     .unwrap_or_else(|| unreachable!("hardware stamps every packet it runs"));
-                let mark = Mark::new(stamp, Some(Trap::new(node, edge_payload(node, meta, vpcs))));
+                let mark = Mark::new(
+                    stamp,
+                    Some(Trap::new(node, edge_payload(node, meta, peers))),
+                );
                 burst.packet_mut(&i).meta_mut().set_mark(Some(mark));
                 left.push(i);
             }

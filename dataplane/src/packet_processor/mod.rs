@@ -167,7 +167,7 @@ impl PipelineIngredients {
             accepted: Some(self.rate_limits.load()),
             // Before the first configuration, which brings the VPCs: nothing past the flow
             // filter can trap under it.
-            vpcs: admission::Vpcs::default(),
+            peers: admission::Peers::default(),
         }
     }
 

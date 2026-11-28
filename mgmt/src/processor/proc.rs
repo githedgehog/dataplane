@@ -147,8 +147,9 @@ pub struct AdmissionUpdate {
     pub acl: Arc<AclFilterContext>,
     /// The peering rate limits.
     pub peering: Arc<rate_limit::RateLimits<PeeringRules>>,
-    /// Every VPC's VNI: what trap edges intern destination VPCs against.
-    pub vpcs: Vec<net::vxlan::Vni>,
+    /// Every VPC's VNI and its peers' VNIs: trap edges number a destination VPC among its
+    /// source VPC's peers.
+    pub peers: Vec<(net::vxlan::Vni, Vec<net::vxlan::Vni>)>,
 }
 
 impl ConfigProcessor {
@@ -828,7 +829,11 @@ impl ConfigProcessor {
                 flow_filter: self.proc_params.flow_filter_writer.get_reader().load(),
                 acl: self.proc_params.aclfilterw.get_reader().load(),
                 peering: self.proc_params.rate_limits.reader().load(),
-                vpcs: overlay.vpc_table().values().map(|vpc| vpc.vni()).collect(),
+                peers: overlay
+                    .vpc_table()
+                    .values()
+                    .map(|vpc| (vpc.vni(), vpc.peer_vnis().collect()))
+                    .collect(),
             };
             if admission.send(update).is_err() {
                 warn!("The admission publisher is gone; generation {genid} is not published to it");

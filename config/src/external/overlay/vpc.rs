@@ -383,6 +383,11 @@ impl ValidatedVpc {
         &self.route_table
     }
 
+    /// The VNIs of the VPCs this one peers with.
+    pub fn peer_vnis(&self) -> impl Iterator<Item = Vni> + '_ {
+        self.peerings.iter().map(ValidatedPeering::remote_vni)
+    }
+
     /// Tell how many peerings this VPC has
     #[must_use]
     pub fn num_peerings(&self) -> usize {
