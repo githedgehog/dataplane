@@ -642,6 +642,37 @@ fn run_kernel_driver(
     });
 }
 
+/// What NIC offload follows, with the admission publisher's `stamping` if any.
+///
+/// The NIC's ingress stage (the arrived meter) is complete, not a prefilter, where the admission
+/// frame resumes past it, and one port offloads: each port's meters are its own, so a tenant
+/// arriving on two would be admitted twice its rate (slice 1 step 5b; cross-port shared meters
+/// would lift this).
+fn offload_policy(
+    ingredients: &PipelineIngredients,
+    ports: &[Port<'_>],
+    stamping: Option<Arc<nic_offload::Stamping>>,
+) -> nic_offload::Policy {
+    let offloading = ports.iter().filter(|port| port.offload).count();
+    let decapped_trap = (stamping.is_some() && offloading == 1)
+        .then_some(crate::packet_processor::admission::node::PRE);
+    if stamping.is_some() {
+        info!(
+            "NIC ingress stage: {}",
+            if decapped_trap.is_some() {
+                "complete (software resumes past the arrived meter)"
+            } else {
+                "a prefilter (software runs the arrived meter again)"
+            }
+        );
+    }
+    nic_offload::Policy {
+        stamping,
+        decapped_trap,
+        ..ingredients.offload_policy()
+    }
+}
+
 /// Bring up the DPDK ports and run their workers until they stop.
 #[allow(clippy::too_many_arguments)]
 fn run_dpdk_driver(
@@ -720,10 +751,7 @@ fn run_dpdk_driver(
         }
     }
 
-    let offload = nic_offload::Policy {
-        stamping,
-        ..ingredients.offload_policy()
-    };
+    let offload = offload_policy(&ingredients, &ports, stamping);
     // Queue handles borrow the ports, so workers must join before port shutdown.
     concurrency::thread::scope(|scope| {
         info!("Using driver DPDK...");

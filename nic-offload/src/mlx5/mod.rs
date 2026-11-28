@@ -27,10 +27,13 @@
 //! multicast source, and VPCs the switch does not know, still arrive encapsulated, for software
 //! to judge.
 //!
-//! **Traps** (`notes/match-action-dag/TRAP-RESUME.md`; slice 1 step 5a): with decapsulation,
-//! everything the switch passes on to software goes through the trap group ([`TRAP`]), whose one
-//! rule writes MARK: the configuration generation the packet was classified under (its stamp)
-//! and where it left the NIC (the root, for now: software runs every stage). The rule is
+//! **Traps** (`notes/match-action-dag/TRAP-RESUME.md`; slice 1 steps 5a, 5b): with
+//! decapsulation, everything the switch passes on to software goes through a trap group, whose
+//! one rule writes MARK: the configuration generation the packet was classified under (its stamp)
+//! and where it left the NIC. What the switch delivers raw goes through [`TRAP`], at the root.
+//! What a VPC's generation delivers decapsulated goes through [`TRAP_DECAPPED`]: it has been
+//! through the VPC's whole ingress policy, so with that complete in the NIC
+//! ([`Plan::trapping_decapped_at`]) software resumes after its arrived meter. The rule is
 //! restamped in place when the generation flips ([`Port::restamp`]). Nothing else in the NIC is
 //! versioned by generation yet, so one rule does what a selector and per-bank trap rules will
 //! once the NIC's own tables are (slice 1 step 5c).
@@ -73,8 +76,11 @@ pub const PARSER: Parser = Parser {
 /// The switch group's number; the root is group 0.
 pub(crate) const SWITCH: FlowGroup = FlowGroup(1);
 
-/// The trap group's number: with decapsulation, what the switch passes on goes through it.
+/// The trap group's number: with decapsulation, what the switch delivers raw goes through it.
 pub(crate) const TRAP: FlowGroup = FlowGroup(2);
+
+/// The trap group of what VPC generations deliver decapsulated.
+pub(crate) const TRAP_DECAPPED: FlowGroup = FlowGroup(3);
 
 /// The META of a packet the NIC decapsulated: the discriminant kind VXLAN VNI in the top byte, the
 /// VNI below (`notes/match-action-dag/TRAP-RESUME.md` §3). Never zero, so it always arrives.
@@ -604,8 +610,11 @@ pub enum Group {
     Color(usize),
     /// A source VPC with no NIC rules, decapsulated and delivered: its catch-all alone.
     Exit(Vni),
-    /// With decapsulation: where everything the switch passes on is stamped, and delivered.
+    /// With decapsulation: where what the switch delivers raw is stamped, and delivered.
     Trap,
+    /// With decapsulation: where what VPC generations deliver decapsulated is stamped, and
+    /// delivered.
+    TrapDecapped,
 }
 
 /// VXLAN the switch delivers encapsulated, ahead of the VPCs' switch rules, for software to drop.
@@ -641,8 +650,8 @@ pub enum Role {
     Color(usize, Color),
     /// An exception the switch delivers encapsulated.
     Exception(Exception),
-    /// The trap rule: stamps, and delivers.
-    Trap,
+    /// A trap rule: stamps, and delivers ([`Group::Trap`] or [`Group::TrapDecapped`]).
+    Trap(Group),
 }
 
 /// A per-rule argument, by reference into the plan.
@@ -654,9 +663,10 @@ pub enum Arg {
     Jump(Group),
     /// Mark with this value.
     Mark(u32),
-    /// Mark with the stamp of the generation the port's hardware classifies under now: the trap
-    /// rule's, resolved when it is installed (and rewritten in place at each flip).
-    Stamp,
+    /// Mark with the stamp of the generation the port's hardware classifies under now, and the
+    /// node software resumes at (`None`: the root): a trap rule's, its stamp resolved when it is
+    /// installed (and rewritten in place at each flip).
+    Stamp(Option<std::num::NonZero<u8>>),
     /// Set META to this value.
     Meta(u32),
 }
@@ -773,8 +783,9 @@ pub struct Plan {
     pub vpcs: BTreeMap<Vni, PlannedVpc>,
     /// Whether what the NIC delivers of a switched VPC arrives decapsulated, with its VNI in META.
     pub decap: bool,
-    /// With decapsulation, the trap table ([`Group::Trap`]), in which the switch's deliveries end.
-    pub trap: Option<PlannedTable>,
+    /// With decapsulation, the trap tables ([`Group::Trap`], [`Group::TrapDecapped`]), in which
+    /// the switch's deliveries end.
+    pub traps: Vec<PlannedTable>,
 }
 
 /// Pattern templates every plan has, by index.
@@ -801,6 +812,9 @@ const SWITCH_TO: usize = 8;
 const RAW: usize = 9;
 /// Stamp, and deliver: the trap rule.
 const STAMP: usize = 10;
+/// Deliver what an ingress rule the NIC does not enforce passes ([`IngressVerdict::Pass`]):
+/// decapsulated, but trapped at the root, since its ingress rule has not run.
+const PASS_UNENFORCED: usize = 11;
 
 /// The actions templates every plan has, in the order of their indices above.
 fn actions_templates(fate: &TemplateAction, decap: bool) -> Vec<Vec<TemplateAction>> {
@@ -810,7 +824,10 @@ fn actions_templates(fate: &TemplateAction, decap: bool) -> Vec<Vec<TemplateActi
         vec![TemplateAction::Meter, TemplateAction::JumpPerRule],
         // With decapsulation, deliveries go through the trap group to be stamped.
         if decap {
-            vec![TemplateAction::VxlanDecap, TemplateAction::Jump(TRAP)]
+            vec![
+                TemplateAction::VxlanDecap,
+                TemplateAction::Jump(TRAP_DECAPPED),
+            ]
         } else {
             vec![fate.clone()]
         },
@@ -819,7 +836,7 @@ fn actions_templates(fate: &TemplateAction, decap: bool) -> Vec<Vec<TemplateActi
             vec![
                 TemplateAction::VxlanDecap,
                 TemplateAction::Count,
-                TemplateAction::Jump(TRAP),
+                TemplateAction::Jump(TRAP_DECAPPED),
             ]
         } else {
             vec![TemplateAction::Count, fate.clone()]
@@ -838,6 +855,11 @@ fn actions_templates(fate: &TemplateAction, decap: bool) -> Vec<Vec<TemplateActi
             vec![fate.clone()]
         },
         vec![TemplateAction::MarkPerRule, fate.clone()],
+        if decap {
+            vec![TemplateAction::VxlanDecap, TemplateAction::Jump(TRAP)]
+        } else {
+            vec![fate.clone()]
+        },
     ]
 }
 
@@ -1082,7 +1104,7 @@ impl Plan {
             fixed: Vec::new(),
             vpcs: BTreeMap::new(),
             decap,
-            trap: None,
+            traps: Vec::new(),
         };
         for (index, meter) in program.meters.iter().enumerate() {
             plan.meters.push(PlannedMeter {
@@ -1133,17 +1155,22 @@ impl Plan {
         }
         if !plan.vpcs.is_empty() {
             plan.fixed = plan.fixed_tables();
-            plan.trap = decap.then(|| {
-                single(
-                    Group::Trap,
-                    0,
-                    ANY,
-                    STAMP,
-                    any_pattern(),
-                    vec![Arg::Stamp],
-                    Role::Trap,
-                )
-            });
+            if decap {
+                plan.traps = [Group::Trap, Group::TrapDecapped]
+                    .into_iter()
+                    .map(|group| {
+                        single(
+                            group,
+                            0,
+                            ANY,
+                            STAMP,
+                            any_pattern(),
+                            vec![Arg::Stamp(None)],
+                            Role::Trap(group),
+                        )
+                    })
+                    .collect();
+            }
         }
         Ok(plan)
     }
@@ -1342,7 +1369,8 @@ impl Plan {
                         COUNT_JUMP => (JUMP, next.1.clone()),
                         _ => (DELIVER, Vec::new()),
                     },
-                    IngressVerdict::Pass => (DELIVER, Vec::new()),
+                    // Not enforced here: software must run the ingress policy on it.
+                    IngressVerdict::Pass => (PASS_UNENFORCED, Vec::new()),
                 };
                 let at = actions
                     .iter()
@@ -1450,11 +1478,27 @@ impl Plan {
         tables
     }
 
+    /// The same plan, with what VPC generations deliver decapsulated trapped at `node`: the
+    /// node software resumes at once the VPC's ingress policy has run (its arrived meter), which
+    /// is legal only where the NIC's ingress stage is complete, not a prefilter: one port (each
+    /// port's meters are its own) and software honouring the node (TRAP-RESUME §10 Q3).
+    #[must_use]
+    pub fn trapping_decapped_at(mut self, node: Option<std::num::NonZero<u8>>) -> Plan {
+        for table in &mut self.traps {
+            if table.group == Group::TrapDecapped {
+                for rule in &mut table.rules {
+                    rule.args = vec![Arg::Stamp(node)];
+                }
+            }
+        }
+        self
+    }
+
     /// Every table of the plan.
     pub fn tables(&self) -> impl Iterator<Item = &PlannedTable> {
         self.fixed
             .iter()
-            .chain(&self.trap)
+            .chain(&self.traps)
             .chain(self.vpcs.values().flat_map(|vpc| &vpc.tables))
             .chain(self.meters.iter().filter_map(|meter| meter.colors.as_ref()))
     }
@@ -1463,7 +1507,7 @@ impl Plan {
     pub fn tables_mut(&mut self) -> impl Iterator<Item = &mut PlannedTable> {
         self.fixed
             .iter_mut()
-            .chain(&mut self.trap)
+            .chain(&mut self.traps)
             .chain(self.vpcs.values_mut().flat_map(|vpc| &mut vpc.tables))
             .chain(
                 self.meters

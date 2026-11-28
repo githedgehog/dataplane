@@ -169,6 +169,8 @@ impl PipelineIngredients {
             decap: true,
             // Only an admission publisher flips generations (`runtime`).
             stamping: None,
+            // Only the admission frame resumes past the arrived meter (`runtime`).
+            decapped_trap: None,
         }
     }
 

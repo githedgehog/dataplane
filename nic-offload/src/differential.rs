@@ -1333,7 +1333,9 @@ fn check_overlay(overlay: &ValidatedOverlay, targets: &[RawRule], frames: &[RawF
                 .map(|vni| (vni, VTEP)),
         )
         .collect();
-    let decap = Plan::new(&program, &all_vteps, &fate(), true).unwrap();
+    let decap = Plan::new(&program, &all_vteps, &fate(), true)
+        .unwrap()
+        .trapping_decapped_at(Some(PAST_INGRESS));
     let mut tally = Tally::default();
     for raw in frames {
         let mut frame = raw.frame(targets);
@@ -1341,6 +1343,7 @@ fn check_overlay(overlay: &ValidatedOverlay, targets: &[RawRule], frames: &[RawF
         let software = frame.software(&acls, &limits);
         let ingress_software = frame.ingress(&ingress);
         check_decap(&plan, &decap, &frame, raw);
+        check_trap(&program, &decap, &frame, raw);
         let outcomes = plan.outcomes(&frame.wire()).unwrap();
         // Transit VXLAN is the underlay's: the NIC neither drops it nor charges a meter for it.
         for outcome in plan.outcomes(&frame.transit()).unwrap() {
@@ -1382,6 +1385,39 @@ fn check_overlay(overlay: &ValidatedOverlay, targets: &[RawRule], frames: &[RawF
         }
     }
     tally
+}
+
+/// The node the differential has decapsulated deliveries trapped at: past the ingress policy.
+const PAST_INGRESS: std::num::NonZero<u8> = std::num::NonZero::new(1).unwrap();
+
+/// Software may resume past the ingress policy only where the NIC ran it whole: a delivery trapped
+/// past it is decapsulated, by a switched VPC's generation, through no ingress rule the NIC does not
+/// enforce ([`IngressVerdict::Pass`](crate::program::IngressVerdict::Pass)); everything else the
+/// switch passes on is trapped at the root. Together with the meters the cascade contract checks
+/// (the NIC charges what software would), that is software skipping its arrived meter safely.
+fn check_trap(program: &Program, decap: &Plan, frame: &Frame, raw: &RawFrame) {
+    for outcome in decap.outcomes(&frame.wire()).unwrap() {
+        if outcome.verdict != Verdict::Delivered {
+            continue;
+        }
+        let unenforced = outcome.path.iter().any(|role| {
+            matches!(role, Role::Ingress(i)
+                if program.ingress[*i].verdict == crate::program::IngressVerdict::Pass)
+        });
+        let switched = outcome
+            .path
+            .iter()
+            .any(|role| matches!(role, Role::Switch(_)));
+        if !switched {
+            continue;
+        }
+        let expected = (outcome.decapped && !unenforced).then_some(PAST_INGRESS);
+        assert_eq!(
+            outcome.trap, expected,
+            "trapped at the wrong node (unenforced ingress rule: {unenforced})\nframe: {raw:?}\noutcome: {outcome:?}"
+        );
+        assert!(outcome.stamped, "delivered unstamped\nframe: {raw:?}");
+    }
 }
 
 /// Decapsulation changes no verdict, and what arrives decapsulated carries its source VNI: a frame

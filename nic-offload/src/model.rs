@@ -43,8 +43,10 @@ pub struct Outcome {
     pub path: Vec<Role>,
     /// The MARK it arrives with, if a rule marked it with a value of its own.
     pub mark: Option<u32>,
-    /// Whether the trap rule stamped it with the configuration generation (its MARK).
+    /// Whether a trap rule stamped it with the configuration generation (its MARK).
     pub stamped: bool,
+    /// Where that trap rule has software resume (`None`: the root).
+    pub trap: Option<std::num::NonZero<u8>>,
     /// The META it arrives with, if any.
     pub meta: Option<u32>,
     /// Whether its outer headers were removed: software receives the inner frame.
@@ -74,6 +76,7 @@ struct State {
     path: Vec<Role>,
     mark: Option<u32>,
     stamped: bool,
+    trap: Option<std::num::NonZero<u8>>,
     meta: Option<u32>,
     decapped: bool,
 }
@@ -111,6 +114,7 @@ impl Plan {
                 path: Vec::new(),
                 mark: None,
                 stamped: false,
+                trap: None,
                 meta: None,
                 decapped: false,
             };
@@ -207,9 +211,10 @@ impl Walk<'_> {
                             s.mark = Some(id);
                         }
                     }
-                    Some(Arg::Stamp) => {
+                    Some(&Arg::Stamp(node)) => {
                         for s in &mut states {
                             s.stamped = true;
+                            s.trap = node;
                         }
                     }
                     _ => return Err(ModelError::Arguments),
@@ -250,6 +255,9 @@ impl Walk<'_> {
                 }
                 TemplateAction::Jump(group) if *group == crate::mlx5::TRAP => {
                     return self.jump(frame, Group::Trap, states, depth);
+                }
+                TemplateAction::Jump(group) if *group == crate::mlx5::TRAP_DECAPPED => {
+                    return self.jump(frame, Group::TrapDecapped, states, depth);
                 }
                 TemplateAction::Jump(_) => return Err(ModelError::Arguments),
                 TemplateAction::JumpPerRule => {
@@ -304,6 +312,7 @@ impl State {
             path: self.path,
             mark: self.mark,
             stamped: self.stamped,
+            trap: self.trap,
             meta: self.meta,
             decapped: self.decapped,
             verdict,

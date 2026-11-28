@@ -96,6 +96,12 @@ pub struct Policy {
     /// With decapsulation, the stamp the trap rule writes, as the configuration publisher wants
     /// it; `None`: stamped with generation 1 for good (no publisher flips).
     pub stamping: Option<Arc<Stamping>>,
+    /// Where software resumes what a VPC's generation delivers decapsulated, past its ingress
+    /// policy (its arrived meter): `None` for the root, where software runs that policy again
+    /// (the NIC's ingress stage a prefilter). Legal only where the NIC's ingress stage is
+    /// complete: one offloading port (each port's meters are its own), and software honouring
+    /// the node (`mlx5::Plan::trapping_decapped_at`).
+    pub decapped_trap: Option<std::num::NonZero<u8>>,
 }
 
 /// The stamp every port's trap rule writes: what the configuration publisher wants

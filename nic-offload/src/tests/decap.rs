@@ -122,3 +122,24 @@ fn without_decapsulation_nothing_changes() {
     .unwrap();
     assert!(plan.vpcs.is_empty() && plan.fixed.is_empty());
 }
+
+/// Where software resumes: what a VPC's generation delivers decapsulated, at the node the plan is
+/// given (past the ingress policy); what the switch delivers raw, at the root.
+#[test]
+fn decapsulated_deliveries_trap_past_ingress_and_raw_ones_at_the_root() {
+    let node = std::num::NonZero::new(1).unwrap();
+    let trapping = plan(&[300]).trapping_decapped_at(Some(node));
+    let decapped = trapping.outcomes(&vxlan(300, VTEP, SRC, 64)).unwrap();
+    let decapped = only(&decapped);
+    assert!(decapped.decapped && decapped.stamped);
+    assert_eq!(decapped.trap, Some(node));
+    for frame in [vxlan(300, VTEP, SRC, 0), vxlan(301, VTEP, SRC, 64)] {
+        let raw = trapping.outcomes(&frame).unwrap();
+        let raw = only(&raw);
+        assert!(!raw.decapped && raw.stamped, "{raw:?}");
+        assert_eq!(raw.trap, None, "{raw:?}");
+    }
+    // By default, every delivery is trapped at the root.
+    let root = plan(&[300]).outcomes(&vxlan(300, VTEP, SRC, 64)).unwrap();
+    assert_eq!(only(&root).trap, None);
+}

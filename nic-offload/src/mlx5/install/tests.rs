@@ -412,7 +412,7 @@ fn the_trap_rule_is_installed_once_and_restamped_in_place() {
     let mut port = Port::new(&flows).stamping(first);
     port.reconcile(&decapsulating(&[100, 200]), port.observe())
         .unwrap();
-    assert!(port.trap.is_some(), "a decapsulating plan stamps");
+    assert!(!port.traps.is_empty(), "a decapsulating plan stamps");
     assert_eq!(port.stamp(), first);
     let (rules, creates, updates) = (
         fixture.live_rules(),
@@ -422,13 +422,15 @@ fn the_trap_rule_is_installed_once_and_restamped_in_place() {
     let next = Stamp::new(Bank::B, 2);
     port.restamp(next).unwrap();
     assert_eq!(port.stamp(), next);
-    assert_eq!(fixture.calls("update"), updates + 1);
+    // One update per trap rule: the raw deliveries', and the decapsulated ones'.
+    assert_eq!(port.traps.len(), 2);
+    assert_eq!(fixture.calls("update"), updates + 2);
     assert_eq!(fixture.calls("create"), creates);
     assert_eq!(fixture.live_rules(), rules);
     // A later plan keeps the rule, and its stamp.
     port.reconcile(&decapsulating(&[100]), port.observe())
         .unwrap();
-    assert!(port.trap.is_some());
+    assert!(!port.traps.is_empty());
     assert_eq!(port.stamp(), next);
 }
 
@@ -443,7 +445,7 @@ fn a_restamp_before_the_trap_is_installed_is_what_it_installs_with() {
     assert_eq!(fixture.calls("update"), 0);
     port.reconcile(&decapsulating(&[100]), port.observe())
         .unwrap();
-    assert!(port.trap.is_some());
+    assert!(!port.traps.is_empty());
     assert_eq!(port.stamp(), stamp);
 }
 
