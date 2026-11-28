@@ -202,7 +202,9 @@ where
     // Create buffer pool for pkt injection in this worker (e.g. ARP/ND)
     // and wrap it in a worker context object to be given to the worker
     let inject_pool = port::new_inject_pool(eal, id)?;
-    let context = WorkerContext::new(inject_pool);
+    // What the worker's poll loop tells its pipeline of its queues (one per port).
+    let drain = concurrency::sync::Arc::new(dag::generation::Drain::new(queues.len()));
+    let context = WorkerContext::new(inject_pool).draining(drain);
 
     let rx_tasks: Vec<RxTaskMonitor> = queues
         .iter()
@@ -312,7 +314,7 @@ where
     thread::Builder::new()
         .name(format!("nic-offload-{name}"))
         .spawn_scoped(scope, move || {
-            nic_offload::mlx5::run(&port.dev, &name, &policy, &fate, &|| {
+            nic_offload::mlx5::run(&port.dev, &name, &policy, &fate, &port.stamps, &|| {
                 subsystem.is_cancelled()
             });
             Ok::<(), Infallible>(())

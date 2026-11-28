@@ -128,12 +128,25 @@ impl nic_offload::Vteps for FibVteps {
 pub(crate) struct WorkerContext<P> {
     /// The buffer pool for the packets injected into the pipeline
     pub(crate) inject_pool: P,
+    /// What the worker's poll loop reports of its queues, if it does: the admission frame then
+    /// tells them drained of a retiring generation one by one (`dag::generation::Drain`).
+    pub(crate) drain: Option<Arc<dag::generation::Drain>>,
 }
 impl<P> WorkerContext<P> {
     #[must_use]
     /// Create a context object for a worker
     pub(crate) fn new(inject_pool: P) -> Self {
-        Self { inject_pool }
+        Self {
+            inject_pool,
+            drain: None,
+        }
+    }
+
+    /// The same, with the worker's queues reported in `drain`.
+    #[must_use]
+    pub(crate) fn draining(mut self, drain: Arc<dag::generation::Drain>) -> Self {
+        self.drain = Some(drain);
+        self
     }
 }
 
@@ -179,6 +192,7 @@ impl PipelineIngredients {
         &self,
         flows: &WorkerFlowTable,
         publication: Option<admission::Publication<'nf>>,
+        drain: Option<Arc<dag::generation::Drain>>,
     ) -> DynPipeline<'nf, Buf>
     where
         Buf: Rebuffer + DeepCopy + 'nf,
@@ -249,10 +263,16 @@ impl PipelineIngredients {
                 );
                 match publication {
                     // This runs on the worker's thread: its reader is its own.
-                    Some(publication) => pipeline.add_stage(composite.with_source(
-                        publication.readers.reader(),
-                        Some(publication.wakers.clone()),
-                    )),
+                    Some(publication) => {
+                        let reader = publication.readers.reader();
+                        let reader = match drain {
+                            Some(drain) => reader.with_drain(drain),
+                            None => reader,
+                        };
+                        pipeline.add_stage(
+                            composite.with_source(reader, Some(publication.wakers.clone())),
+                        )
+                    }
                     None => pipeline.add_stage(composite),
                 }
             }
@@ -287,7 +307,8 @@ impl PipelineIngredients {
         );
         let ipforward1 = IpForwarder::new("IP-Forward-1", self.fibtr_factory.handle());
         let ipforward2 = IpForwarder::new("IP-Forward-2", self.fibtr_factory.handle());
-        let arpnd_nf = self.arpnd_factory.nf(context.inject_pool);
+        let WorkerContext { inject_pool, drain } = context;
+        let arpnd_nf = self.arpnd_factory.nf(inject_pool);
         let pktdump = PacketDumper::new("pipeline-end", true, None);
 
         let stats_stage = Stats::new("stats", self.stats_w.clone());
@@ -300,7 +321,7 @@ impl PipelineIngredients {
             CaptureStage::new(Direction::Egress, self.capture.sink(Direction::Egress));
 
         // Build OVERLAY pipeline, handing off the worker flow table
-        let overlay = self.overlay_pipeline(flows, publication);
+        let overlay = self.overlay_pipeline(flows, publication, drain);
 
         // Build the MAIN pipeline for a router
         DynPipeline::new()

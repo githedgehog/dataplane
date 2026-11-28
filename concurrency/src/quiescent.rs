@@ -305,6 +305,14 @@ impl<T: Send + Sync> Publisher<T> {
         }
     }
 
+    /// Whether every live Subscriber has taken `version` or a later one. A Subscriber decides
+    /// when it takes a newer version ([`Subscriber::behind`], [`Subscriber::cached`]), so having
+    /// taken one is an acknowledgement the Publisher can wait for.
+    #[must_use]
+    pub fn observed_by_all(&self, version: Version) -> bool {
+        self.domain.min_observed().is_none_or(|min| min >= version)
+    }
+
     /// Number of retired `Versioned`s still pending reclamation.
     /// Useful for diagnostics.
     #[must_use]
@@ -381,6 +389,47 @@ pub struct Subscriber<'p, T: Send + Sync> {
 }
 
 impl<T: Send + Sync> Subscriber<'_, T> {
+    /// The value last taken by [`snapshot`](Self::snapshot), without looking for a newer one:
+    /// `None` before the first. A Subscriber holding on to it keeps its version pinned, and
+    /// [`Publisher::observed_by_all`] waiting.
+    #[must_use]
+    pub fn cached(&self) -> Option<&T> {
+        self.cached.as_deref().map(|versioned| &versioned.inner)
+    }
+
+    /// Take the newest published value if `take` agrees, judging that very value: one load,
+    /// so no newer publication can slip in between the judgement and the taking. Returns
+    /// whether it took it (false too if there was nothing newer). Loads the slot, so only worth
+    /// it when [`behind`](Self::behind).
+    ///
+    /// Declining drops the clone loaded here, which is never the last reference: until this
+    /// Subscriber observes that version or a later one, the slot or the Publisher's retired
+    /// list holds it, so its destructor still runs on the Publisher's thread.
+    pub fn take_if(&mut self, take: impl FnOnce(&T) -> bool) -> bool {
+        let latest = self.publication.load_full();
+        let newer = self
+            .cached
+            .as_ref()
+            .is_none_or(|cached| cached.version < latest.version);
+        if !newer || !take(&latest.inner) {
+            return false;
+        }
+        let version = latest.version;
+        // As in `snapshot`: cache before observing.
+        self.cached = Some(latest);
+        self.epoch.observe(version);
+        true
+    }
+
+    /// Whether a newer version is published than the one last taken (one atomic load).
+    #[must_use]
+    pub fn behind(&self) -> bool {
+        let newest = self.latest.load();
+        self.cached
+            .as_ref()
+            .is_none_or(|cached| cached.version.get() < newest)
+    }
+
     /// Refresh the per-thread cache from the latest publication and
     /// return a borrow of the underlying value.  The borrow is bounded
     /// by `&mut self`, so two snapshots from the same Subscriber

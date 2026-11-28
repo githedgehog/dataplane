@@ -24,6 +24,7 @@
 
 use super::*;
 use bolero::TypeGenerator;
+use concurrency::sync::Mutex;
 
 /// Workers at once, at most; operations name a worker modulo those present.
 const WORKERS: usize = 3;
@@ -183,7 +184,13 @@ impl Model<'_> {
     /// Check what `worker` read against the model, and record that it observed the newest.
     fn read(&mut self, worker: usize, live: &Live<Tag>) {
         assert_eq!(live.tables().newest().generation(), self.newest);
-        assert_eq!(live.tables().previous().is_some(), self.previous);
+        if self.flipped && self.previous {
+            // Flipped, not retired: a worker keeps the previous generation until its queue is
+            // drained of it, then lets it go. Either is right; what letting go too early would
+            // cost (a stale packet) is checked where packets run.
+        } else {
+            assert_eq!(live.tables().previous().is_some(), self.previous);
+        }
         self.observed[worker] = self.newest;
     }
 }
@@ -242,11 +249,13 @@ impl<'g> Run<'g> {
         let mut burst: Vec<_> = ring.drain(..n).collect();
         if burst.is_empty() {
             reader.idle();
-            return;
+        } else {
+            let seen = run_checked(&mut burst, live.tables());
+            assert_eq!(seen.stale, 0, "a FIFO worker saw a stale packet");
+            reader.settle(seen);
         }
-        let seen = run_checked(&mut burst, live.tables());
-        assert_eq!(seen.stale, 0, "a FIFO worker saw a stale packet");
-        reader.settle(seen);
+        // A worker may take a newer publication as soon as a burst's evidence allows.
+        model.observed[worker] = model.observed[worker].max(reader.observed());
     }
 
     fn apply(&mut self, op: &Op) {
@@ -283,6 +292,8 @@ impl<'g> Run<'g> {
                     self.read(w);
                     if self.model.rings[w].is_empty() {
                         self.readers[w].idle();
+                        self.model.observed[w] =
+                            self.model.observed[w].max(self.readers[w].observed());
                     }
                 }
             }

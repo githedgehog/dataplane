@@ -339,6 +339,13 @@ impl<'t> Port<'t> {
         }
     }
 
+    /// Whether the NIC stamps what this port receives: its trap rule is installed, and the port
+    /// not lost.
+    #[must_use]
+    pub fn stamps(&self) -> bool {
+        self.trap.is_some() && !self.poisoned
+    }
+
     /// Whether the port's offload is off for good.
     #[must_use]
     pub fn poisoned(&self) -> bool {
@@ -1489,6 +1496,7 @@ pub fn run(
     port_name: &str,
     policy: &Policy,
     fate: &TemplateAction,
+    stamps: &concurrency::sync::atomic::AtomicBool,
     stop: &dyn Fn() -> bool,
 ) {
     let (acls, reader, routing) = (&policy.acls, &policy.rate_limits, &policy.routing);
@@ -1512,6 +1520,7 @@ pub fn run(
         if let Some((stamping, applied)) = &stamping {
             sync_stamp(port, port_name, stamping, applied);
         }
+        stamps.store(port.stamps(), concurrency::sync::atomic::Ordering::Release);
     };
     while !stop() {
         sync(&mut port);
@@ -1547,26 +1556,15 @@ pub fn run(
             vteps: &vteps,
             decap: policy.decap,
         };
+        // Conservatively stamping while installing, which may add the trap rule: a worker must
+        // not count this port's queues drained of a generation while it may be stamping one.
+        stamps.store(
+            policy.decap && !port.poisoned(),
+            concurrency::sync::atomic::Ordering::Release,
+        );
         let program = install_policy(&mut port, port_name, &seen, fate, &changed);
-        if let Some(program) = &program
-            && (!program.denies.is_empty()
-                || !program.rules.is_empty()
-                || !program.ingress.is_empty())
-        {
-            info!(
-                "port {port_name}: NIC enforcing {} ingress rule(s), {} ACL deny(s) and {} rate limit(s) for {} source VPC(s)",
-                port.installed(|role| matches!(role, Role::Ingress(_))),
-                port.installed(|role| matches!(role, Role::Deny(_))),
-                port.installed(|role| matches!(role, Role::Police(_))),
-                port.vpcs.len(),
-            );
-        }
-        if policy.decap && program.is_some() && !port.vpcs.is_empty() {
-            info!(
-                "port {port_name}: NIC decapsulating the VXLAN of {} VPC(s)",
-                port.vpcs.len()
-            );
-        }
+        stamps.store(port.stamps(), concurrency::sync::atomic::Ordering::Release);
+        installed(port_name, &port, program.as_ref(), policy.decap);
         // Every peering the flow filter routes, but those an attached VPC's rules are of: what
         // the NIC holds, whatever this round of installing came to.
         let in_nic = port.attached_peerings();
@@ -1590,6 +1588,27 @@ pub fn run(
             }
         }
         report(port_name, &port);
+    }
+}
+
+/// Say what installing `program` (`None`: it failed) came to on `port`.
+fn installed(port_name: &str, port: &Port<'_>, program: Option<&Program>, decap: bool) {
+    if let Some(program) = program
+        && (!program.denies.is_empty() || !program.rules.is_empty() || !program.ingress.is_empty())
+    {
+        info!(
+            "port {port_name}: NIC enforcing {} ingress rule(s), {} ACL deny(s) and {} rate limit(s) for {} source VPC(s)",
+            port.installed(|role| matches!(role, Role::Ingress(_))),
+            port.installed(|role| matches!(role, Role::Deny(_))),
+            port.installed(|role| matches!(role, Role::Police(_))),
+            port.vpcs.len(),
+        );
+    }
+    if decap && program.is_some() && !port.vpcs.is_empty() {
+        info!(
+            "port {port_name}: NIC decapsulating the VXLAN of {} VPC(s)",
+            port.vpcs.len()
+        );
     }
 }
 

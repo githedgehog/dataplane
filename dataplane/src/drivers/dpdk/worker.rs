@@ -129,6 +129,7 @@ impl<'p> Worker<'p> {
             }
         };
 
+        let drain = context.drain.clone();
         let WorkerPipeline {
             mut pipeline,
             flows,
@@ -196,8 +197,13 @@ impl<'p> Worker<'p> {
 
             // poll the port queues this worker is responsible for. Return whether frames were received,
             // whether the pipeline ran for pending work, and the queue to watch first
-            let (saw_frames, ran_pending, busy) =
-                self.poll_ports(&tx_by_if, &mut pipeline, &mut scratch, &mut counters);
+            let (saw_frames, ran_pending, busy) = self.poll_ports(
+                &tx_by_if,
+                &mut pipeline,
+                &mut scratch,
+                &mut counters,
+                drain.as_deref(),
+            );
 
             if ran_pending {
                 // No buffer was received, but the pipeline was run as it had pending work.
@@ -247,12 +253,13 @@ impl<'p> Worker<'p> {
         pipeline: &mut DynPipeline<'p, Mbuf<'p>>,
         scratch: &mut Scratch<'p>,
         counters: &mut [RxCounters],
+        drain: Option<&dag::generation::Drain>,
     ) -> (bool, bool, Option<usize>) {
         let mut received = None;
         let mut injected = None;
         for (slot, counters) in counters.iter_mut().enumerate() {
             let had_frames = self.inject(slot, counters);
-            if self.poll_one(slot, tx_by_if, pipeline, scratch, counters) {
+            if self.poll_one(slot, tx_by_if, pipeline, scratch, counters, drain) {
                 received = Some(slot);
             } else if had_frames && injected.is_none() {
                 injected = Some(slot);
@@ -331,9 +338,21 @@ impl<'p> Worker<'p> {
         pipeline: &mut DynPipeline<'p, Mbuf<'p>>,
         scratch: &mut Scratch<'p>,
         counters: &mut RxCounters,
+        drain: Option<&dag::generation::Drain>,
     ) -> bool {
         let rx_mbufs = &mut scratch.rx_mbufs;
         self.ports[slot].queues.rx.receive_into(rx_mbufs);
+        if let Some(drain) = drain {
+            // Less than a full burst: the queue was left empty.
+            drain.polled(
+                slot,
+                rx_mbufs.len() < dpdk::mem::MBUF_BURST,
+                self.ports[slot]
+                    .queues
+                    .stamps
+                    .load(concurrency::sync::atomic::Ordering::Relaxed),
+            );
+        }
         if rx_mbufs.is_empty() {
             return false;
         }

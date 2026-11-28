@@ -478,6 +478,10 @@ pub(crate) struct Port<'eal> {
     pub(crate) rx_interrupts: bool,
     /// Whether the port reserved resources for [`nic_offload`], and so can be programmed by it.
     pub(crate) offload: bool,
+    /// Whether the NIC stamps what this port receives with the configuration generation (its
+    /// offload has a trap rule): set by the port's offload thread, read by its workers' poll
+    /// loops, for which a queue that stamps nothing holds nothing of a retiring generation.
+    pub(crate) stamps: Arc<concurrency::sync::atomic::AtomicBool>,
 }
 
 impl<'eal> Port<'eal> {
@@ -749,6 +753,7 @@ impl<'eal> Port<'eal> {
             control,
             rx_interrupts: config.rx_interrupts,
             offload,
+            stamps: Arc::new(concurrency::sync::atomic::AtomicBool::new(false)),
         })
     }
 
@@ -834,6 +839,8 @@ pub(crate) struct PortQueues<'p> {
     pub(crate) injector: Option<Injector<'p>>,
     /// Whether `rx` raises interrupts a sleeping worker can wait on.
     pub(crate) rx_interrupts: bool,
+    /// Whether the NIC stamps what this port receives ([`Port::stamps`]).
+    pub(crate) stamps: Arc<concurrency::sync::atomic::AtomicBool>,
 }
 
 /// One port as the control worker sees it.
@@ -989,6 +996,7 @@ pub(crate) fn deal_queues<'p, 'eal>(
                     None
                 },
                 rx_interrupts: port.rx_interrupts,
+                stamps: Arc::clone(&port.stamps),
             });
         }
 

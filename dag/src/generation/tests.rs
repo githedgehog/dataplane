@@ -14,6 +14,7 @@ use crate::MAX_BURST;
 use crate::burst::{Emit, Keep, scope_with};
 use crate::meta::Opaque;
 use crate::presence::Presence;
+use concurrency::sync::Mutex;
 use concurrency::thread::{self, ThreadId};
 use net::buffer::TestBuffer;
 use net::packet::test_utils::build_test_ipv4_packet;
@@ -661,4 +662,53 @@ fn a_flip_waits_for_hardware_to_stamp() {
     assert_eq!(generations.retire(), Err(Wait::NotFlipped));
     stamps.set(true);
     assert_eq!(generations.step(), Stepped::Flipped(2));
+}
+
+/// With its queues reported ([`Drain`]), a worker lets the previous generation go only once every
+/// queue is drained of it, each by its own evidence: a burst stamped with the newest and none
+/// older, polls that left it empty past the grace, or a port that stamps nothing.
+#[test]
+fn every_queue_must_drain_before_the_previous_generation_goes() {
+    let log = drops();
+    let generations = Generations::new(Tag::new(1, &log)).with_policy(Policy {
+        software: false,
+        idle_grace: 2,
+    });
+    let drain = Arc::new(Drain::new(3));
+    let mut reader = generations.reader().with_drain(Arc::clone(&drain));
+    generations.begin(Tag::new(2, &log)).unwrap();
+    let _ = reader.live();
+    let previous = generations.selector().stamp();
+    generations.flip().unwrap();
+    let newest = generations.selector().stamp();
+    // A burst off `queue` (full, so it leaves the queue non-empty) stamped `stamp`.
+    let burst = |reader: &mut Reader<'_, Tag>, queue: usize, stamp: Stamp| {
+        drain.polled(queue, false, queue != 2);
+        let mut packets = vec![packet(Some(stamp))];
+        let live = reader.live();
+        let seen = run_checked(&mut packets, live.tables());
+        reader.settle(seen);
+    };
+    // Queue 2's port stamps nothing; queue 0 shows the newest generation.
+    drain.polled(2, false, false);
+    burst(&mut reader, 0, newest);
+    assert_eq!(
+        generations.retire(),
+        Err(Wait::NotAcknowledged),
+        "queue 1 unknown"
+    );
+    // Queue 1 still holds a straggler of the previous generation.
+    burst(&mut reader, 1, previous);
+    assert_eq!(generations.retire(), Err(Wait::NotAcknowledged));
+    // Then polls that leave it empty, past the grace.
+    for _ in 0..3 {
+        drain.polled(1, true, true);
+        let _ = reader.live();
+        reader.idle();
+    }
+    assert_eq!(generations.retire(), Ok(()));
+    assert_eq!(
+        reader.live().tables().previous().map(Snapshot::generation),
+        None
+    );
 }

@@ -75,7 +75,7 @@ fn arrive(reader: &Reader<'_, Tag>, selector: &Selector, unstamped: bool) -> Pac
     }
     let stamp = selector.stamp();
     let generation = generation_of(stamp);
-    let observed = reader.progress.observed.load(Ordering::Acquire);
+    let observed = reader.observed();
     assert!(
         observed >= generation,
         "I3: stamped with generation {generation}, but the worker has only observed {observed}"
@@ -174,17 +174,11 @@ fn run_plan(plan: &Plan) {
             let _done = Done(&done);
             for n in 2..=begins + 1 {
                 assert_eq!(generations.begin(Tag::new(n, &log)), Ok(n));
+                // The gates themselves: that no packet is stamped with a generation a worker has
+                // not observed (I3, `arrive`), and that no worker sees a stale packet (`poll`),
+                // on every schedule.
                 retry(|| generations.flip(), Wait::NotObserved);
-                assert!(
-                    generations.all(|p| p.observed.load(Ordering::Acquire) >= n),
-                    "flipped to {n} before every worker observed it"
-                );
                 retry(|| generations.retire(), Wait::NotAcknowledged);
-                assert!(
-                    generations.all(|p| p.acknowledged.load(Ordering::Acquire) >= n),
-                    "retired {} before every worker acknowledged {n}",
-                    n - 1
-                );
             }
         });
     }
