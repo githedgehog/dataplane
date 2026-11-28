@@ -227,6 +227,10 @@ impl Version {
 /// owning thread once at startup.
 pub struct Publisher<T: Send + Sync> {
     publication: Arc<Slot<Versioned<T>>>,
+    /// The version in `publication`, stored after it: what a [`Subscriber`] reads each batch, a
+    /// plain load of a line only `publish` writes. Loading the slot clones the `Arc` in it, two
+    /// read-modify-writes on a count every subscriber shares; only a newer version is worth that.
+    latest: Arc<CachePaddedCounter>,
     domain: Arc<Domain>,
     retired: RefCell<Vec<Arc<Versioned<T>>>>,
     next_version: Cell<Version>,
@@ -242,8 +246,11 @@ pub fn channel<T: Send + Sync>(initial: T) -> Publisher<T> {
         version: Version::INITIAL,
         inner: initial,
     }));
+    let latest = Arc::new(CachePaddedCounter::new());
+    latest.store(Version::INITIAL.get());
     Publisher {
         publication,
+        latest,
         domain,
         retired: RefCell::new(Vec::with_capacity(8)),
         next_version: Cell::new(Version::INITIAL.next()),
@@ -266,6 +273,8 @@ impl<T: Send + Sync> Publisher<T> {
             inner: message,
         });
         let prev_arc = self.publication.swap(new_arc);
+        // After the swap (release): a subscriber that loads this version finds it in the slot.
+        self.latest.store(generation.get());
         #[allow(clippy::expect_used)] // !Sync invariant means no concurrent borrow
         self.retired
             .try_borrow_mut()
@@ -310,6 +319,7 @@ impl<T: Send + Sync> Publisher<T> {
     pub fn factory(&self) -> SubscriberFactory<'_, T> {
         SubscriberFactory {
             publication: &self.publication,
+            latest: &self.latest,
             domain: &self.domain,
         }
     }
@@ -320,6 +330,7 @@ impl<T: Send + Sync> Publisher<T> {
 /// `thread::scope`.
 pub struct SubscriberFactory<'p, T: Send + Sync> {
     publication: &'p Arc<Slot<Versioned<T>>>,
+    latest: &'p Arc<CachePaddedCounter>,
     domain: &'p Arc<Domain>,
 }
 
@@ -338,6 +349,7 @@ impl<'p, T: Send + Sync> SubscriberFactory<'p, T> {
     pub fn subscriber(&self) -> Subscriber<'p, T> {
         Subscriber {
             publication: self.publication,
+            latest: self.latest,
             cached: None,
             epoch: self.domain.register(),
             _marker: PhantomData,
@@ -357,6 +369,7 @@ impl<'p, T: Send + Sync> SubscriberFactory<'p, T> {
 /// the fields.
 pub struct Subscriber<'p, T: Send + Sync> {
     publication: &'p Arc<Slot<Versioned<T>>>,
+    latest: &'p Arc<CachePaddedCounter>,
     cached: Option<Arc<Versioned<T>>>,
     epoch: Epoch,
     /// `&'p ()` carries the covariant Publisher-lifetime brand;
@@ -372,13 +385,18 @@ impl<T: Send + Sync> Subscriber<'_, T> {
     /// return a borrow of the underlying value.  The borrow is bounded
     /// by `&mut self`, so two snapshots from the same Subscriber
     /// cannot coexist -- one snapshot per Subscriber per batch.
+    ///
+    /// Costs one atomic load when nothing newer is published: the slot is loaded only for a newer
+    /// version (or the first snapshot).
     pub fn snapshot(&mut self) -> &T {
-        let latest = self.publication.load_full();
+        let newest = self.latest.load();
         let needs_refresh = self
             .cached
             .as_ref()
-            .is_none_or(|cached| cached.version < latest.version);
+            .is_none_or(|cached| cached.version.get() < newest);
         if needs_refresh {
+            // At least `newest`: the publisher stores the version after swapping the slot.
+            let latest = self.publication.load_full();
             let version = latest.version;
             // Cache update MUST happen before `observe` call!  Reordering
             // would let the Publisher's reclaim drop its retained clone
