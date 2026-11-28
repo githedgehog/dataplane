@@ -180,7 +180,7 @@ impl<'b, Buf: PacketBufferMut> Burst<'b, Buf> {
         let mut stale = Drops::none();
         let mut live = 0;
         for i in sel {
-            let Some(stamp) = self.packets[i.index()].meta().stamp else {
+            let Some(stamp) = self.packets[i.index()].meta().stamp() else {
                 live |= i.bit();
                 continue;
             };

@@ -345,12 +345,48 @@ impl<'b, Buf: PacketBufferMut> Burst<'b, Buf> {
         writes: Presence,
         stage: impl FnOnce(&mut Vec<Packet<Buf>>),
     ) -> (Sel<'b, Opaque>, Drops<'b>) {
+        self.legacy_hiding(sel, 0, writes, stage)
+    }
+
+    /// [`Burst::legacy`] where `sel` is not every live packet the stage would act on: the packets
+    /// of `hide` that are not done are hidden from it, as done, for the stage's run. For a
+    /// composite whose packets enter at different nodes (`trap`): those that entered past the
+    /// stage, or left before it, must not see it run.
+    ///
+    /// # Panics
+    ///
+    /// As [`Burst::legacy`].
+    pub fn legacy_hiding<S: State>(
+        &mut self,
+        sel: Sel<'b, S>,
+        hide: u64,
+        writes: Presence,
+        stage: impl FnOnce(&mut Vec<Packet<Buf>>),
+    ) -> (Sel<'b, Opaque>, Drops<'b>) {
+        debug_assert_eq!(hide & sel.bits, 0, "hiding a packet of the selection");
         // Only debug builds look outside the selection: its packets are live, so a drop inside
         // it is a packet newly done.
         #[cfg(debug_assertions)]
         let before = self.done_bits();
+        let mut hidden = 0u64;
+        let mut rest = hide;
+        while rest != 0 {
+            let k = rest.trailing_zeros() as usize;
+            rest &= rest - 1;
+            let meta = self.packets[k].meta_mut();
+            if meta.done.is_none() {
+                meta.done = Some(DoneReason::InternalDrop);
+                hidden |= 1 << k;
+            }
+        }
         let len = self.packets.len();
         stage(self.packets);
+        let mut rest = hidden;
+        while rest != 0 {
+            let k = rest.trailing_zeros() as usize;
+            rest &= rest - 1;
+            self.packets[k].meta_mut().done = None;
+        }
         assert_eq!(
             self.packets.len(),
             len,

@@ -76,7 +76,7 @@ impl Billing {
     pub(crate) fn bytes<Buf: PacketBufferMut>(self, packet: &Packet<Buf>) -> Option<u32> {
         match self {
             Billing::Ip => billed_bytes(packet),
-            Billing::OuterIp => packet.meta().outer_ip_len.map(u32::from),
+            Billing::OuterIp => packet.meta().outer_ip_len.map(|len| u32::from(len.get())),
         }
     }
 }

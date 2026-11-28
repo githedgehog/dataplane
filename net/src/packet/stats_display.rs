@@ -59,6 +59,9 @@ impl Display for DoneReason {
 
             Self::NoBuffRoom => f.pad("Not enough buffer room (rebuffering)"),
             Self::StaleGeneration => f.pad("Stale configuration generation"),
+            Self::TrapUnknownNode => f.pad("Trapped at an unknown node"),
+            Self::TrapDecode => f.pad("Trap metadata undecodable"),
+            Self::TrapShape => f.pad("Trapped packet of the wrong shape"),
 
             // these occur post delivery, prior to xmit
             Self::NoBuffRoomXmit => f.pad("No headroom to serialize packet on xmit"),

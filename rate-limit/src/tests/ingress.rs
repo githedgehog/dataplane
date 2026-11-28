@@ -67,7 +67,7 @@ fn arriving(from: u32, dst: &str, outer_ip_len: u16) -> Packet<TestBuffer> {
     let mut p = packet(dst, 80);
     p.meta_mut().src_vpcd = Some(VpcDiscriminant::VNI(vni(from)));
     p.meta_mut().dst_vpcd = None;
-    p.meta_mut().outer_ip_len = Some(outer_ip_len);
+    p.meta_mut().outer_ip_len = std::num::NonZero::new(outer_ip_len);
     p
 }
 

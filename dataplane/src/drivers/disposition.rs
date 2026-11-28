@@ -70,7 +70,10 @@ impl From<DoneReason> for Disposition {
             | DoneReason::DeparseError
             | DoneReason::NoBuffRoom
             | DoneReason::NoBuffRoomXmit
-            | DoneReason::StaleGeneration => Disposition::Drop,
+            | DoneReason::StaleGeneration
+            | DoneReason::TrapUnknownNode
+            | DoneReason::TrapDecode
+            | DoneReason::TrapShape => Disposition::Drop,
         }
     }
 }
@@ -155,6 +158,9 @@ mod test {
             (DoneReason::NoBuffRoom, Disposition::Drop),
             (DoneReason::NoBuffRoomXmit, Disposition::Drop),
             (DoneReason::StaleGeneration, Disposition::Drop),
+            (DoneReason::TrapUnknownNode, Disposition::Drop),
+            (DoneReason::TrapDecode, Disposition::Drop),
+            (DoneReason::TrapShape, Disposition::Drop),
         ];
 
         for (verdict, expected) in table {

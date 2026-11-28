@@ -123,7 +123,7 @@ fn run(packets: &mut Vec<Packet<TestBuffer>>, tables: Tables<'_, Tag>) -> Ran {
 /// The generation each packet must run under, from its stamp and the burst's tables; `None` if
 /// stale.
 fn expected(packet: &Packet<TestBuffer>, tables: Tables<'_, Tag>) -> Option<u64> {
-    match packet.meta().stamp {
+    match packet.meta().stamp() {
         None => Some(tables.newest().generation()),
         Some(stamp) if tables.newest().stamp() == stamp => Some(tables.newest().generation()),
         Some(stamp) => tables
@@ -168,7 +168,7 @@ fn run_checked(packets: &mut Vec<Packet<TestBuffer>>, tables: Tables<'_, Tag>) -
 
 fn packet(stamp: Option<Stamp>) -> Packet<TestBuffer> {
     let mut packet = build_test_ipv4_packet(64).unwrap();
-    packet.meta_mut().stamp = stamp;
+    packet.meta_mut().set_stamp(stamp);
     packet
 }
 
@@ -467,7 +467,7 @@ fn generations_cycle_under_load_and_every_packet_runs_under_one() {
                             let stamp = (rng.next(10) != 0).then(|| selector.stamp());
                             let mut p = spare.pop().unwrap_or_else(|| packet(None));
                             *p.meta_mut() = PacketMeta::default();
-                            p.meta_mut().stamp = stamp;
+                            p.meta_mut().set_stamp(stamp);
                             queue.push_back(p);
                         }
                     }

@@ -127,6 +127,9 @@ pub enum DoneReason {
     NoBuffRoomXmit, /* the packet was delivered to driver, but not serialized due to lack of buffer headroom */
     NoBuffRoom, /* the packet had to be dropped due to lack of buffer room (e.g. when rebuffering) */
     StaleGeneration, /* stamped with a configuration generation no longer live */
+    TrapUnknownNode, /* trapped by hardware at a node that is not a trap target here: a lowering bug */
+    TrapDecode,      /* trapped by hardware with metadata its node cannot decode: a lowering bug */
+    TrapShape,       /* trapped by hardware, but not the packet its node takes: a lowering bug */
 }
 
 bitflags! {
@@ -179,14 +182,16 @@ impl Bank {
 /// bits of the generation, which catch a straggler stamped before its bank was reused.
 ///
 /// One byte, never zero, so that `Option<Stamp>` is one byte too: the bank in the top bit, a
-/// marker bit, and the generation's low six bits. Simulated in software until hardware writes one.
+/// marker bit, and the generation's low three bits. Three because that is what the trap MARK
+/// carries (four bits with the bank, `notes/match-action-dag/TRAP-RESUME.md` §3): a straggler
+/// aliases a live generation only if it is a multiple of eight generations old.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Stamp(NonZero<u8>);
 
 impl Stamp {
     const BANK: u8 = 0x80;
     const MARKER: u8 = 0x40;
-    const LOW: u8 = 0x3f;
+    const LOW: u8 = 0x07;
 
     /// The stamp of `generation` in `bank`.
     #[must_use]
@@ -230,6 +235,185 @@ impl Stamp {
             Bank::B
         }
     }
+
+    /// As the four bits hardware writes: the bank, then the generation's low bits.
+    #[must_use]
+    pub const fn to_nibble(self) -> u8 {
+        let bits = self.0.get();
+        ((bits & Self::BANK) >> 4) | (bits & Self::LOW)
+    }
+
+    /// From [`Stamp::to_nibble`]'s four bits (higher bits are ignored).
+    #[must_use]
+    pub const fn from_nibble(nibble: u8) -> Stamp {
+        let bits = ((nibble & 0x08) << 4) | (nibble & Self::LOW) | Self::MARKER;
+        match NonZero::new(bits) {
+            Some(bits) => Stamp(bits),
+            None => unreachable!(),
+        }
+    }
+}
+
+/// Where hardware left a packet to software: the node it enters at, which has not executed
+/// (everything before it has, once), and its trap edge's metadata, as that node declares it
+/// (`notes/match-action-dag/TRAP-RESUME.md` T1, T2). The generation is the [`Stamp`] beside it,
+/// in the packet's [`Mark`]. No trap: the packet enters at the root.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Trap {
+    node: NonZero<u8>,
+    payload: u16,
+}
+
+impl Trap {
+    /// A trap at `node` (never the root, 0) with its edge's `payload`.
+    #[must_use]
+    pub const fn new(node: NonZero<u8>, payload: u16) -> Trap {
+        Trap { node, payload }
+    }
+
+    /// The node it enters at.
+    #[must_use]
+    pub const fn node(self) -> NonZero<u8> {
+        self.node
+    }
+
+    /// Its edge's metadata, encoded as its node declares.
+    #[must_use]
+    pub const fn payload(self) -> u16 {
+        self.payload
+    }
+}
+
+/// What hardware wrote in a packet's MARK: the generation it classified the packet under, and,
+/// past the root, where it trapped it. The trap rule writes MARK as one immediate
+/// (`notes/match-action-dag/TRAP-RESUME.md` §3), laid out as:
+///
+/// | MARK bits | Content |
+/// | --- | --- |
+/// | 23:19 | the node, 5 bits; 0 is the root, 31 reserved (it keeps MARK below the PMD's reserved values above `0xffffef`) |
+/// | 18:15 | the stamp: bank, and the generation's low 3 bits ([`Stamp::to_nibble`]) |
+/// | 14:0 | the node's edge payload, 15 bits; none at the root |
+///
+/// Kept as received, in 3 bytes (`Packet<Mbuf>`'s size budget,
+/// `dataplane/src/drivers/dpdk/worker.rs`): the reserved node stands for no MARK, so the field
+/// needs no `Option`.
+///
+/// Revised from §3's draft (8 node bits, 12 payload bits): slice 1's edges past the flow filter
+/// carry its verdict, an interned destination VPC and five flags, which 12 bits would hold only
+/// for 127 VPCs. 31 node ids is far more than slice 1's handful of trap targets (§4: static ids).
+#[derive(Copy, Clone, PartialEq, Eq, Hash)]
+pub struct Mark([u8; 3]);
+
+/// Why a MARK is not one [`Mark`] encodes: a counted drop, and a lowering bug if ever seen (T7).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum MarkError {
+    /// Bits above the layout, or the reserved node.
+    Reserved,
+    /// The root with a payload: the root takes none.
+    RootPayload,
+}
+
+impl Mark {
+    /// Payload bits.
+    pub const PAYLOAD_BITS: u32 = 15;
+    /// The largest payload.
+    pub const PAYLOAD_MAX: u16 = (1 << Self::PAYLOAD_BITS) - 1;
+    /// The reserved node id.
+    pub const RESERVED_NODE: u8 = 31;
+    const NODE_SHIFT: u32 = 19;
+    const STAMP_SHIFT: u32 = 15;
+    /// No MARK: the reserved node.
+    const NONE: Mark = Mark([0xff; 3]);
+
+    /// What the trap rule for `trap` (`None`: the root) writes on packets classified under
+    /// `stamp`.
+    ///
+    /// # Panics
+    ///
+    /// If the trap's node is the reserved id or wider, or its payload exceeds
+    /// [`Mark::PAYLOAD_MAX`]: the lowering refuses both at load time.
+    #[must_use]
+    pub const fn new(stamp: Stamp, trap: Option<Trap>) -> Mark {
+        let (node, payload) = match trap {
+            Some(trap) => (trap.node.get(), trap.payload),
+            None => (0, 0),
+        };
+        assert!(
+            node < Self::RESERVED_NODE,
+            "a reserved or too wide trap node"
+        );
+        assert!(payload <= Self::PAYLOAD_MAX, "a too wide trap payload");
+        let bits = ((node as u32) << Self::NODE_SHIFT)
+            | ((stamp.to_nibble() as u32) << Self::STAMP_SHIFT)
+            | payload as u32;
+        let [lo, mid, hi, _] = bits.to_le_bytes();
+        Mark([lo, mid, hi])
+    }
+
+    /// From the 32 bits the NIC delivers.
+    ///
+    /// # Errors
+    ///
+    /// If the MARK is outside the layout ([`MarkError`]).
+    pub const fn from_bits(bits: u32) -> Result<Mark, MarkError> {
+        let node = bits >> Self::NODE_SHIFT;
+        if node >= Self::RESERVED_NODE as u32 {
+            return Err(MarkError::Reserved);
+        }
+        if node == 0 && bits & Self::PAYLOAD_MAX as u32 != 0 {
+            return Err(MarkError::RootPayload);
+        }
+        let [lo, mid, hi, _] = bits.to_le_bytes();
+        Ok(Mark([lo, mid, hi]))
+    }
+
+    /// The 32 bits the trap rule writes.
+    #[must_use]
+    pub const fn to_bits(self) -> u32 {
+        let [lo, mid, hi] = self.0;
+        u32::from_le_bytes([lo, mid, hi, 0])
+    }
+
+    /// The generation the packet was classified under.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)] // masked
+    pub const fn stamp(self) -> Stamp {
+        Stamp::from_nibble((self.to_bits() >> Self::STAMP_SHIFT) as u8 & 0xf)
+    }
+
+    /// Where the packet was trapped, if past the root.
+    #[must_use]
+    #[allow(clippy::cast_possible_truncation)] // masked, and below the reserved node
+    pub const fn trap(self) -> Option<Trap> {
+        let bits = self.to_bits();
+        match NonZero::new((bits >> Self::NODE_SHIFT) as u8) {
+            Some(node) => Some(Trap::new(node, (bits & Self::PAYLOAD_MAX as u32) as u16)),
+            None => None,
+        }
+    }
+
+    const fn is_none(self) -> bool {
+        self.to_bits() >> Self::NODE_SHIFT >= Self::RESERVED_NODE as u32
+    }
+}
+
+impl Default for Mark {
+    fn default() -> Self {
+        Mark::NONE
+    }
+}
+
+impl std::fmt::Debug for Mark {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.is_none() {
+            f.pad("no mark")
+        } else {
+            f.debug_struct("Mark")
+                .field("stamp", &self.stamp())
+                .field("trap", &self.trap())
+                .finish()
+        }
+    }
 }
 
 #[allow(unused)]
@@ -242,7 +426,7 @@ pub struct PacketMeta {
     pub vrf: Option<VrfId>,          /* for IP packet, the VRF to use to route it */
     pub done: Option<DoneReason>, /* if Some, the reason why a packet was marked as done, including delivery to NF */
     pub src_vpcd: Option<VpcDiscriminant>, /* the vpc discriminant of a received encapsulated packet */
-    pub outer_ip_len: Option<u16>, /* length of a decapsulated packet's outer IP packet, as received */
+    pub outer_ip_len: Option<NonZero<u16>>, /* length of a decapsulated packet's outer IP packet, as received */
     pub dst_vpcd: Option<VpcDiscriminant>, /* the vpc discriminant of a packet to be (or already) re-encapsulated by the gateway */
     pub flow_info: Option<Arc<FlowInfo>>, /* flow specific information that can be looked up in the flow table */
     pub dscp: Option<Dscp>,               /* Dscp to preserve for egress traffic */
@@ -250,7 +434,7 @@ pub struct PacketMeta {
     pub flow_key: Option<Box<FlowKey>>,   /* the flow key to use for NAT flow creation */
     pub tcp_flags: Option<TcpFlags>,      /* TCP flags seen by the ACL stage, for new flows */
     pub syn_proxy: Option<Arc<SynProxyState>>, /* state for new flows set up by the SYN proxy */
-    pub stamp: Option<Stamp>, /* the configuration generation hardware classified it under, if any */
+    mark: Mark, /* what hardware wrote in MARK, if anything: its stamp and trap */
     #[cfg(feature = "test_meta")]
     pub test: Option<Box<TestMeta>>,
 }
@@ -278,6 +462,35 @@ impl PacketMeta {
     #[must_use]
     pub fn is_done(&self) -> bool {
         self.done.is_some()
+    }
+
+    /// What hardware wrote in MARK, if anything.
+    #[must_use]
+    pub fn mark(&self) -> Option<Mark> {
+        (!self.mark.is_none()).then_some(self.mark)
+    }
+
+    /// Set what hardware wrote in MARK (the driver, or emulated hardware).
+    pub fn set_mark(&mut self, mark: Option<Mark>) {
+        self.mark = mark.unwrap_or(Mark::NONE);
+    }
+
+    /// The configuration generation hardware classified it under, if any.
+    #[must_use]
+    pub fn stamp(&self) -> Option<Stamp> {
+        self.mark().map(Mark::stamp)
+    }
+
+    /// Stamp it as classified under `stamp` (`None`: unstamped), keeping its trap.
+    pub fn set_stamp(&mut self, stamp: Option<Stamp>) {
+        let trap = self.trap();
+        self.set_mark(stamp.map(|stamp| Mark::new(stamp, trap)));
+    }
+
+    /// Where hardware left it to software, if past the root.
+    #[must_use]
+    pub fn trap(&self) -> Option<Trap> {
+        self.mark().and_then(Mark::trap)
     }
 
     #[must_use]

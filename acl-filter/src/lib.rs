@@ -384,6 +384,16 @@ impl<S: Edit<kind::OpeningTcpFlags>> Join for Filtered<'_, S> {
     }
 }
 
+/// The TCP flags the ACL gives a packet it allows (`PacketMeta::tcp_flags`, for the flow it may
+/// open). Pure, from the bytes and the VPCs: a packet trapped past the ACL gets them back by
+/// replaying this (`notes/match-action-dag/TRAP-RESUME.md` Q6).
+#[must_use]
+pub fn opening_tcp_flags<Buf: PacketBufferMut>(packet: &Packet<Buf>) -> Option<TcpFlags> {
+    PacketSummary::try_from(packet)
+        .ok()
+        .and_then(|summary| summary.tcp_flags)
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct PacketSummary {
     pub(crate) src_vni: Vni,

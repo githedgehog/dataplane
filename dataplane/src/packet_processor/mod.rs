@@ -165,6 +165,9 @@ impl PipelineIngredients {
             flow_filter: self.flow_filter_reader_factory.handle().load(),
             acl: self.aclfiltertablesr_factory.handle().load(),
             accepted: Some(self.rate_limits.load()),
+            // Before the first configuration, which brings the VPCs: nothing past the flow
+            // filter can trap under it.
+            vpcs: admission::Vpcs::default(),
         }
     }
 

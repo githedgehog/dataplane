@@ -246,7 +246,7 @@ impl IpForwarder {
         debug!("DECAPSULATED vxlan packet, vni = {vni}. Next vrf = {vrf}");
         let meta = packet.meta_mut();
         meta.src_vpcd = Some(VpcDiscriminant::VNI(vni));
-        meta.outer_ip_len = outer_ip_len;
+        meta.outer_ip_len = outer_ip_len.and_then(std::num::NonZero::new);
         meta.vrf = Some(vrf);
         meta.set_overlay(true);
     }

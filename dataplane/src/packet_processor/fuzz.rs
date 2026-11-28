@@ -7998,12 +7998,19 @@ mod model {
 /// fabric each; everything a later stage can observe of each packet must agree.
 #[cfg(test)]
 mod admission_frame {
+    use super::super::admission::{Cut, node};
     use super::shapes::{Batch, aim, wire};
     use super::*;
     use concurrency::process_global::atomic::{AtomicU64, Ordering};
+    use dag::MAX_BURST;
     use dag::generation::Generations;
     use net::headers::{Headers, TryHeaders, TryTcp};
+    use net::packet::Stamp;
     use net::tcp::TcpFlags;
+    use std::cell::RefCell;
+    use std::collections::{HashMap, HashSet};
+    use std::num::NonZero;
+    use std::rc::Rc;
 
     /// What a stage after admission can observe of a packet.
     #[derive(Debug, PartialEq, Eq)]
@@ -8074,7 +8081,17 @@ mod admission_frame {
                 AclFilterContext::try_from(overlay).expect("a validated overlay lowers to acls"),
             ),
             accepted: Some(accepted.reader().load()),
+            vpcs: super::super::admission::Vpcs::new(vnis(overlay)),
         }
+    }
+
+    /// Every VPC's VNI, as management hands them to the admission publisher.
+    fn vnis(overlay: &ValidatedOverlay) -> Vec<Vni> {
+        overlay
+            .vpc_table()
+            .values()
+            .map(config::external::overlay::vpc::ValidatedVpc::vni)
+            .collect()
     }
 
     /// Send the same packets through the legacy fabric and a generation-reading worker, the
@@ -8089,7 +8106,7 @@ mod admission_frame {
         let want = legacy.send_batch(build());
         let mut packets = build();
         for packet in &mut packets {
-            packet.meta_mut().stamp = stamp;
+            packet.meta_mut().set_stamp(stamp);
         }
         let got = typed.send_batch(packets);
         for (n, (want, got)) in want.iter().zip(&got).enumerate() {
@@ -8353,6 +8370,7 @@ mod admission_frame {
                                 peering: tables
                                     .accepted
                                     .unwrap_or_else(|| Arc::new(RateLimits::empty())),
+                                vpcs: vnis(overlay),
                             })
                             .expect("the publisher's end");
                         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -8378,6 +8396,388 @@ mod admission_frame {
             generations.newest() - 1,
             started.elapsed()
         );
+    }
+
+    /// A legacy stage, and the packets it acted on (by test id): what the emulated NIC's guards
+    /// keep from being cut past it (`admission::node`: it runs in software only).
+    struct Watched<N> {
+        stage: N,
+        touched: Rc<RefCell<HashSet<u64>>>,
+        /// The packets the stage saw live.
+        seen: Rc<RefCell<HashSet<u64>>>,
+    }
+
+    impl<N: NetworkFunction<TestBuffer>> NetworkFunction<TestBuffer> for Watched<N> {
+        fn process_burst(&mut self, packets: &mut Vec<Packet<TestBuffer>>) {
+            let before: Vec<Observed> = packets.iter().map(observe).collect();
+            self.seen
+                .borrow_mut()
+                .extend(packets.iter().filter(|p| !p.is_done()).map(id));
+            self.stage.process_burst(packets);
+            for (packet, before) in packets.iter().zip(&before) {
+                if observe(packet) != *before {
+                    self.touched.borrow_mut().insert(id(packet));
+                }
+            }
+        }
+
+        fn set_data(&mut self, data: Arc<PipelineData>) {
+            self.stage.set_data(data);
+        }
+
+        fn set_sched_run(&mut self, sched: pipeline::SchedRun) {
+            self.stage.set_sched_run(sched);
+        }
+    }
+
+    fn id(packet: &Packet<TestBuffer>) -> u64 {
+        packet.meta().test.as_ref().map_or(0, |t| t.id)
+    }
+
+    /// The emulated NIC's cut: each packet's planned trap target, by test id.
+    struct Planned(HashMap<u64, NonZero<u8>>);
+
+    impl Cut<TestBuffer> for Planned {
+        fn exit(&mut self, node: NonZero<u8>, packet: &Packet<TestBuffer>) -> bool {
+            self.0.get(&id(packet)) == Some(&node)
+        }
+    }
+
+    /// The admission composite alone, as `blueprint`'s workers have it, reading `source`; its
+    /// legacy `pre` stages watched: what they act on into `touched`, what they see into `seen`.
+    fn composite<Src: Source>(
+        blueprint: &Blueprint,
+        source: Src,
+        touched: &Rc<RefCell<HashSet<u64>>>,
+        seen: &Rc<RefCell<HashSet<u64>>>,
+    ) -> Admission<impl NetworkFunction<TestBuffer> + use<Src>, Passthrough, Src> {
+        let mut admission = Admission::new(
+            Some(RateLimiter::new(blueprint.arrived.clone())),
+            Watched {
+                stage: IcmpErrorHandler::new(blueprint.flow_table.clone())
+                    .chain(FlowLookup::new("flow-lookup", blueprint.flow_table.clone())),
+                touched: touched.clone(),
+                seen: seen.clone(),
+            },
+            FlowFilter::new("flow-filter", blueprint.flow_filter.handle()),
+            Passthrough,
+            AclFilter::new("acl-filter", blueprint.acl.handle()),
+            Some(RateLimiter::new(blueprint.accepted.clone())),
+        )
+        .with_source(source, None);
+        NetworkFunction::<TestBuffer>::set_data(&mut admission, blueprint.pipeline.clone());
+        admission
+    }
+
+    /// The trap targets, and the root (`None`), by index.
+    const CUTS: [Option<NonZero<u8>>; 5] = [
+        None,
+        Some(node::PRE),
+        Some(node::ACL),
+        Some(node::ACCEPTED),
+        Some(node::EXPORT),
+    ];
+
+    /// What one T8 round showed.
+    #[derive(Default)]
+    struct Resumed {
+        /// Packets resumed in software, per trap target (`CUTS` order).
+        at: [u64; 5],
+        /// Of those, forwarded.
+        forwarded: u64,
+        /// Packets dropped by the emulated NIC before their cut.
+        in_nic: u64,
+        /// Cuts pulled back to `pre`, because a legacy stage acted on the packet.
+        guarded: u64,
+    }
+
+    /// T8 for one burst: `requests`, stamped with `stamps`, run whole by `oracle`; and run by
+    /// `nic` up to the cut `plan` picks for each (pulled back to `pre` where a legacy stage acted
+    /// on the packet), then, as the NIC delivers them (bytes and MARK, nothing else), by
+    /// `software` from their trap. Each packet must end the same. Returns the trapped packets, as
+    /// delivered, for a later round.
+    #[allow(clippy::too_many_arguments)]
+    fn trapped_and_resumed<Pre: NetworkFunction<TestBuffer>, Src: Source>(
+        oracle: &mut Admission<Pre, Passthrough, Src>,
+        nic: &mut Admission<Pre, Passthrough, Src>,
+        software: &mut Admission<Pre, Passthrough, Src>,
+        touched: &Rc<RefCell<HashSet<u64>>>,
+        seen: &[Rc<RefCell<HashSet<u64>>>; 2],
+        requests: &[Packet<TestBuffer>],
+        stamps: &[Stamp],
+        plan: &[u8],
+        resumed: &mut Resumed,
+        what: &str,
+    ) -> Vec<Packet<TestBuffer>> {
+        let stamped = || -> Vec<Packet<TestBuffer>> {
+            requests
+                .iter()
+                .zip(stamps)
+                .map(|(packet, stamp)| {
+                    let mut packet = packet.deep_copy().expect("a test buffer copies");
+                    packet.meta_mut().set_stamp(Some(*stamp));
+                    packet
+                })
+                .collect()
+        };
+        touched.borrow_mut().clear();
+        let mut want = stamped();
+        oracle.process_burst(&mut want);
+
+        // The cut per packet; where `pre` acted, hardware's guards trap at `pre`.
+        let mut cuts = HashMap::new();
+        for (k, packet) in requests.iter().enumerate() {
+            let pick = plan.get(k).map_or(0, |b| usize::from(*b) % CUTS.len());
+            let pick = if pick > 1 && touched.borrow().contains(&id(packet)) {
+                resumed.guarded += 1;
+                1
+            } else {
+                pick
+            };
+            if let Some(node) = CUTS[pick] {
+                cuts.insert(id(packet), node);
+            }
+        }
+        // The NIC runs what it was given a cut for; the rest go to software raw (the root).
+        let (mut in_nic, raw): (Vec<_>, Vec<_>) = stamped()
+            .into_iter()
+            .partition(|packet| cuts.contains_key(&id(packet)));
+        for seen in seen {
+            seen.borrow_mut().clear();
+        }
+        nic.emulate(&mut in_nic, &mut Planned(cuts.clone()));
+        // T2 for the legacy stages, which outcomes can't show (they leave these packets alone):
+        // the NIC's `pre` never saw a packet trapped at it, software's none trapped past it.
+        for (packet, node) in &cuts {
+            if *node == node::PRE {
+                assert!(
+                    !seen[0].borrow().contains(packet),
+                    "{what}: the NIC ran `pre` on packet {packet}, trapped at it"
+                );
+            }
+        }
+        let mut delivered = Vec::new();
+        let mut dropped_in_nic = HashMap::new();
+        for packet in in_nic.into_iter().chain(raw) {
+            if packet.is_done() {
+                dropped_in_nic.insert(id(&packet), packet);
+                continue;
+            }
+            // As delivered: the bytes, and MARK's 32 bits; what decapsulation tells (the source
+            // VPC); nothing else of what the NIC computed.
+            let mut fresh = wire(packet.headers()).expect("the NIC's packet parses");
+            arrive(&mut fresh, local());
+            fresh.meta_mut().test = packet.meta().test.clone();
+            let mark = packet.meta().mark().map(|m| {
+                net::packet::Mark::from_bits(m.to_bits()).expect("the trap rule's MARK decodes")
+            });
+            fresh.meta_mut().set_mark(mark);
+            delivered.push(fresh);
+        }
+        let held: Vec<_> = delivered
+            .iter()
+            .map(|p| p.deep_copy().expect("a test buffer copies"))
+            .collect();
+        for packet in &delivered {
+            let k = CUTS
+                .iter()
+                .position(|c| *c == packet.meta().trap().map(net::packet::Trap::node))
+                .unwrap_or_else(|| unreachable!("the NIC traps at targets only"));
+            resumed.at[k] += 1;
+        }
+        software.process_burst(&mut delivered);
+        for (packet, node) in &cuts {
+            if *node != node::PRE {
+                assert!(
+                    !seen[1].borrow().contains(packet),
+                    "{what}: software ran `pre` on packet {packet}, trapped past it"
+                );
+            }
+        }
+        resumed.in_nic += dropped_in_nic.len() as u64;
+        resumed.forwarded += delivered.iter().filter(|p| !p.is_done()).count() as u64;
+
+        let mut got: HashMap<u64, Packet<TestBuffer>> = dropped_in_nic;
+        got.extend(delivered.into_iter().map(|p| (id(&p), p)));
+        for want in &want {
+            let got = got.get(&id(want)).expect("every packet comes out");
+            assert_eq!(
+                observe(got),
+                observe(want),
+                "{what}, packet {}: trapped and resumed (left) differs from run whole",
+                id(want)
+            );
+        }
+        held
+    }
+
+    /// T8 (`notes/match-action-dag/TRAP-RESUME.md`): a packet trapped by hardware at any target
+    /// and resumed in software ends as if software had run it whole, under the generation its
+    /// stamp names, and every node executes it exactly once in one tier or the other.
+    ///
+    /// Hardware is the composite itself, run as a NIC that stops at a cut ([`Cut`]); what crosses
+    /// is only what the NIC can deliver: the bytes, MARK, and the source VPC decapsulation tells.
+    /// Rounds, as in the cross-generation differential: one generation; the next begun, packets
+    /// stamped with the previous; flipped, stamps mixed; the previous retired, and the packets
+    /// trapped under it in the mixed round delivered late, which must drop as stale (T5).
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn a_trapped_packet_ends_as_if_run_whole() {
+        static SAMPLE: Sample = Sample::new(64);
+        static AT: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+        static FORWARDED: AtomicU64 = AtomicU64::new(0);
+        static IN_NIC: AtomicU64 = AtomicU64::new(0);
+        static GUARDED: AtomicU64 = AtomicU64::new(0);
+        static STALE: AtomicU64 = AtomicU64::new(0);
+
+        let _eal = dpdk::test_support::start_eal();
+
+        bolero::check!()
+            .with_max_len(MAX_INPUT_LEN)
+            .with_generator((Batch, Batch, bolero::produce::<Vec<u8>>()))
+            .with_iterations(SAMPLE.cases())
+            .for_each(|((exposes, stacks), (other, _), plan)| {
+                SAMPLE.draw();
+                settled(|| {
+                    let lower = |exposes: &Vec<VpcExpose>| {
+                        overlay_with_exposes_and_acl(exposes.clone(), None)
+                            .ok()
+                            .and_then(|overlay| overlay.validate().ok())
+                    };
+                    let (Some(a), Some(b)) = (lower(exposes), lower(other)) else {
+                        return;
+                    };
+                    let fleet = Fleet::lowering_framed(
+                        &a,
+                        None,
+                        Arc::new(FlowTable::default()),
+                        Frame::Admission,
+                    );
+                    let generations = Generations::new(admission_tables(&a));
+                    let touched = Rc::new(RefCell::new(HashSet::new()));
+                    let ignored = Rc::new(RefCell::new(HashSet::new()));
+                    let seen = [
+                        Rc::new(RefCell::new(HashSet::new())),
+                        Rc::new(RefCell::new(HashSet::new())),
+                    ];
+                    let blueprint = fleet.blueprint();
+                    let mut oracle = composite(blueprint, generations.reader(), &touched, &ignored);
+                    let mut nic = composite(blueprint, generations.reader(), &ignored, &seen[0]);
+                    let mut software =
+                        composite(blueprint, generations.reader(), &ignored, &seen[1]);
+
+                    let private = exposes.first().and_then(|e| {
+                        e.ips
+                            .first()
+                            .map(lpm::prefix::PrefixWithOptionalPorts::prefix)
+                    });
+                    let mut next_id = 0;
+                    let requests: Vec<_> = stacks
+                        .iter()
+                        .filter_map(|(_, headers)| {
+                            let mut headers = headers.clone();
+                            aim(&mut headers, private);
+                            let mut packet = wire(&headers)?;
+                            arrive(&mut packet, local());
+                            next_id += 1;
+                            packet.meta_mut().test =
+                                Some(Box::new(net::packet::TestMeta { id: next_id }));
+                            Some(packet)
+                        })
+                        .take(MAX_BURST)
+                        .collect();
+                    if requests.is_empty() {
+                        return;
+                    }
+                    let mut resumed = Resumed::default();
+                    let mut round = |stamps: &[Stamp], what: &str| {
+                        trapped_and_resumed(
+                            &mut oracle,
+                            &mut nic,
+                            &mut software,
+                            &touched,
+                            &seen,
+                            &requests,
+                            stamps,
+                            plan,
+                            &mut resumed,
+                            what,
+                        )
+                    };
+                    let selector = generations.selector();
+                    let all = |stamp: Stamp| vec![stamp; requests.len()];
+
+                    // One generation live.
+                    round(&all(selector.stamp()), "one generation");
+                    // The next begun; hardware still stamps the previous.
+                    let previous = selector.stamp();
+                    generations
+                        .begin(admission_tables(&b))
+                        .expect("one generation live");
+                    round(&all(previous), "two live, stamped with the previous");
+                    // Flipped: stragglers stamped with the previous among the newest's.
+                    generations.flip().expect("every reader observed the next");
+                    let newest = selector.stamp();
+                    let mixed: Vec<Stamp> = (0..requests.len())
+                        .map(|k| {
+                            let bit = plan.get(k).is_some_and(|b| b & 0x80 != 0);
+                            if bit { previous } else { newest }
+                        })
+                        .collect();
+                    let late = round(&mixed, "flipped, stamps mixed");
+                    round(&all(newest), "flipped, stamped with the newest");
+                    let before = (oracle.executed(), nic.executed(), software.executed());
+                    assert_eq!(
+                        before.0,
+                        before.1 + before.2,
+                        "a node executed a packet in neither tier, or in both"
+                    );
+                    if generations.retire().is_err() {
+                        return;
+                    }
+                    // Trapped under the previous generation, delivered after it retired.
+                    let mut late = late;
+                    let stamped: Vec<bool> = late
+                        .iter()
+                        .map(|p| p.meta().stamp() == Some(previous))
+                        .collect();
+                    software.process_burst(&mut late);
+                    for (packet, stale) in late.iter().zip(stamped) {
+                        if stale {
+                            assert_eq!(
+                                packet.get_done(),
+                                Some(DoneReason::StaleGeneration),
+                                "a packet trapped under a retired generation resumed"
+                            );
+                            STALE.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+
+                    for (k, n) in resumed.at.iter().enumerate() {
+                        AT[k].fetch_add(*n, Ordering::Relaxed);
+                    }
+                    FORWARDED.fetch_add(resumed.forwarded, Ordering::Relaxed);
+                    IN_NIC.fetch_add(resumed.in_nic, Ordering::Relaxed);
+                    GUARDED.fetch_add(resumed.guarded, Ordering::Relaxed);
+                });
+            });
+
+        let at: Vec<u64> = AT.iter().map(|n| n.load(Ordering::Relaxed)).collect();
+        let (forwarded, in_nic, guarded, stale) = (
+            FORWARDED.load(Ordering::Relaxed),
+            IN_NIC.load(Ordering::Relaxed),
+            GUARDED.load(Ordering::Relaxed),
+            STALE.load(Ordering::Relaxed),
+        );
+        eprintln!(
+            "resumed at root/pre/acl/accepted/export={at:?} forwarded={forwarded} dropped in the NIC={in_nic} guarded back to pre={guarded} stale={stale}"
+        );
+        for (k, n) in at.iter().enumerate() {
+            SAMPLE.assert_covered(*n > 0, &format!("no packet resumed at cut {k}"));
+        }
+        SAMPLE.assert_covered(forwarded > 0, "no resumed packet was forwarded");
+        SAMPLE.assert_covered(in_nic > 0, "the NIC never dropped a packet");
+        SAMPLE.assert_covered(stale > 0, "no trap was ever stale");
     }
 
     /// A reply to a forwarded UDP or TCP packet, as the remote VPC would send it.

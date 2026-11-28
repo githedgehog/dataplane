@@ -225,15 +225,7 @@ impl FlowFilter {
             packet.meta_mut().set_forced_flow_tracking(track);
         }
 
-        // Port forwarding or masquerading used in combination with static NAT need to keep track of
-        // the initial IP addresses for creating the right flow table entries, so we may have to
-        // attach the flow key to packet's metadata.
-        if ((packet.meta().requires_port_forwarding() || packet.meta().requires_masquerade())
-            && packet.meta().requires_static_nat())
-            && let Ok(flow_key) = FlowKey::try_from(&*packet)
-        {
-            packet.meta_mut().flow_key = Some(Box::new(flow_key));
-        }
+        Self::keep_flow_key(packet);
 
         // The packet is allowed. However, it may refer to an outdated flow and a new flow may be
         // needed. This pipeline stage cannot always tell whether a flow is valid or not, as it
@@ -244,6 +236,21 @@ impl FlowFilter {
             packet.invalidate_flows();
         }
         Ok(dst_vpcd)
+    }
+
+    /// Port forwarding or masquerading used in combination with static NAT need to keep track of
+    /// the initial IP addresses for creating the right flow table entries, so we may have to
+    /// attach the flow key to packet's metadata.
+    ///
+    /// Pure, from the bytes and the NAT requirements: a packet trapped past the flow filter gets
+    /// it back by replaying this (`notes/match-action-dag/TRAP-RESUME.md` Q6).
+    pub fn keep_flow_key<Buf: PacketBufferMut>(packet: &mut Packet<Buf>) {
+        if ((packet.meta().requires_port_forwarding() || packet.meta().requires_masquerade())
+            && packet.meta().requires_static_nat())
+            && let Ok(flow_key) = FlowKey::try_from(&*packet)
+        {
+            packet.meta_mut().flow_key = Some(Box::new(flow_key));
+        }
     }
 
     fn tag_for_bypass(meta: &mut PacketMeta, flow_summary: &FlowSummary) {

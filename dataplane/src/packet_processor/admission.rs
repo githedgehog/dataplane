@@ -25,16 +25,25 @@
 //! under the one its stamp names, and a node with packets of both runs once per generation. The
 //! production source reads today's per-NF readers as a single generation; tests publish through
 //! [`dag::generation::Generations`]. The hosted legacy stages still read their own state.
+//!
+//! **Traps** (slice 1 step 4, `notes/match-action-dag/TRAP-RESUME.md`). Hardware may have run a
+//! prefix of the slice: a packet it trapped enters at a declared target ([`node`]), as one more
+//! inbound edge of that node, with the edge's metadata decoded under the packet's generation.
+//! Hardware is emulated by this same composite, stopped at a [`Cut`]: T8, the equivalence of a
+//! whole run and a trapped-and-resumed one, is tested in `fuzz.rs`.
 
 use acl_filter::{AclFilter, AclFilterContext, AclFilterContextReader};
 use concurrency::sync::Arc;
 use dag::generation::{Reader, Seen, Snapshot, Tables};
-use dag::{Drops, Kind, MAX_BURST, Presence, kind};
+use dag::trap::Entries;
+use dag::{Assign, Burst, Drops, Edit, Emit, Forget, Keep, Kind, MAX_BURST, Presence, Sel, kind};
 use flow_filter::{FlowFilter, FlowFilterContext, FlowFilterContextReader};
 use net::buffer::PacketBufferMut;
-use net::packet::{Bank, DoneReason, Packet};
+use net::packet::{Bank, DoneReason, Mark, Packet, PacketMeta, Trap, VpcDiscriminant};
+use net::vxlan::Vni;
 use pipeline::{NetworkFunction, PipelineData, SchedRun};
 use rate_limit::{IngressRules, PeeringRules, Policed, RateLimitReader, RateLimiter, RateLimits};
+use std::num::NonZero;
 
 /// How the production pipeline runs the admission stages: `DATAPLANE_ADMISSION_FRAME` =
 /// `legacy` (default: one stage each), `chained` (the same stages chained into one: the control
@@ -71,6 +80,176 @@ pub(crate) struct AdmissionTables {
     pub(crate) flow_filter: Arc<FlowFilterContext>,
     pub(crate) acl: Arc<AclFilterContext>,
     pub(crate) accepted: Option<Arc<RateLimits<PeeringRules>>>,
+    /// The VPCs, as trap edges intern them.
+    pub(crate) vpcs: Vpcs,
+}
+
+/// The admission slice's trap targets: static ids (TRAP-RESUME §4), each where hardware may
+/// leave a packet to software, and each named for the node it enters at, which has not executed.
+/// No trap is the root: the arrived meter.
+///
+/// The hosted legacy stages (ICMP errors and the flow lookup; the SYN cookie checker) run in
+/// software only. A packet past them was one they would leave alone, which hardware ensures with
+/// guards (a flow-cache miss, not an ICMP error, …): T2 holds because they would not have acted.
+pub(crate) mod node {
+    use std::num::NonZero;
+
+    /// The legacy `pre` stages: the arrived meter executed.
+    pub(crate) const PRE: NonZero<u8> = NonZero::new(1).unwrap();
+    /// The ACL: the flow filter executed. The edge carries its verdict ([`super::Routed`]).
+    pub(crate) const ACL: NonZero<u8> = NonZero::new(2).unwrap();
+    /// The accepted meter: the ACL executed. The verdict, as the ACL left it.
+    pub(crate) const ACCEPTED: NonZero<u8> = NonZero::new(3).unwrap();
+    /// Past the slice: every node executed. The verdict, as the ACL left it.
+    pub(crate) const EXPORT: NonZero<u8> = NonZero::new(4).unwrap();
+
+    /// All of them, in topological order.
+    pub(crate) const ALL: [NonZero<u8>; 4] = [PRE, ACL, ACCEPTED, EXPORT];
+}
+
+/// The VPCs of one generation, numbered for trap edges: a destination VPC is a 10-bit id there,
+/// valid under the packet's generation only (its stamp says which). Interning is compiler state
+/// (TRAP-RESUME §3), per generation; the ids need not be stable across generations, since a
+/// trap is always decoded under the generation it was encoded under.
+#[derive(Debug, Default)]
+pub(crate) struct Vpcs(Vec<Vni>);
+
+impl Vpcs {
+    /// Ids are 1..=MAX; 0 is no VPC. A configuration with more VPCs keeps the rest off the
+    /// trap edges past the flow filter: those can't be cut there (R4, load time).
+    const MAX: usize = (1 << Routed::DST_BITS) - 1;
+
+    pub(crate) fn new(vnis: impl IntoIterator<Item = Vni>) -> Self {
+        let mut vnis: Vec<Vni> = vnis.into_iter().collect();
+        vnis.sort_unstable();
+        vnis.dedup();
+        Vpcs(vnis)
+    }
+
+    fn id(&self, vpcd: VpcDiscriminant) -> Option<u16> {
+        let VpcDiscriminant::VNI(vni) = vpcd;
+        let k = self.0.binary_search(&vni).ok()?;
+        (k < Self::MAX).then(|| u16::try_from(k + 1).ok()).flatten()
+    }
+
+    fn get(&self, id: u16) -> Option<VpcDiscriminant> {
+        let k = usize::from(id).checked_sub(1)?;
+        (k < Self::MAX)
+            .then(|| self.0.get(k))
+            .flatten()
+            .map(|vni| VpcDiscriminant::VNI(*vni))
+    }
+}
+
+/// The flow filter's verdict, as the trap edges past it carry it in 15 bits: the destination
+/// VPC ([`Vpcs`] id, 0 for none) above five flags, the NAT requirements and forced tracking.
+/// What else the flow filter and the ACL leave on a packet is recomputed from the bytes on entry
+/// (pure replays, TRAP-RESUME Q6): the pre-NAT flow key, the opening TCP flags.
+struct Routed;
+
+impl Routed {
+    const DST_BITS: u32 = 10;
+    const FLAGS: u32 = 5;
+
+    /// What the edge carries for `meta`, under `vpcs`; `None` if its VPC has no id.
+    fn encode(meta: &PacketMeta, vpcs: &Vpcs) -> Option<u16> {
+        let dst = match meta.dst_vpcd {
+            None => 0,
+            Some(dst) => vpcs.id(dst)?,
+        };
+        let flags = [
+            meta.requires_masquerade(),
+            meta.requires_port_forwarding(),
+            meta.requires_static_nat_src(),
+            meta.requires_static_nat_dst(),
+            meta.has_forced_flow_tracking(),
+        ]
+        .iter()
+        .enumerate()
+        .fold(0u16, |bits, (k, &on)| bits | (u16::from(on) << k));
+        Some((dst << Self::FLAGS) | flags)
+    }
+
+    /// Back onto `meta`: the flags; the destination VPC (if any) is returned, for a typed
+    /// write.
+    ///
+    /// # Errors
+    ///
+    /// For an id with no VPC: a lowering bug.
+    fn decode(
+        payload: u16,
+        vpcs: &Vpcs,
+        meta: &mut PacketMeta,
+    ) -> Result<Option<VpcDiscriminant>, Undecodable> {
+        let id = payload >> Self::FLAGS;
+        let dst = match id {
+            0 => None,
+            id => Some(vpcs.get(id).ok_or(Undecodable)?),
+        };
+        let flag = |k: u32| payload & (1 << k) != 0;
+        meta.set_masquerade(flag(0));
+        meta.set_port_forwarding(flag(1));
+        meta.set_static_nat_src(flag(2));
+        meta.set_static_nat_dst(flag(3));
+        meta.set_forced_flow_tracking(flag(4));
+        Ok(dst)
+    }
+}
+
+/// A trap edge's payload its node can't decode (T7, `TrapDecode`).
+struct Undecodable;
+
+const _: () = assert!(Routed::DST_BITS + Routed::FLAGS == Mark::PAYLOAD_BITS);
+
+/// The payload of `node`'s trap edge for a packet with `meta`, under `vpcs`.
+///
+/// # Panics
+///
+/// If the packet's VPC has no id: a cut the lowering would have refused (emulation only).
+fn edge_payload(node: NonZero<u8>, meta: &PacketMeta, vpcs: &Vpcs) -> u16 {
+    if node == self::node::PRE {
+        0
+    } else {
+        Routed::encode(meta, vpcs).unwrap_or_else(|| {
+            unreachable!("a VPC beyond the trap edge's ids, cut past the flow filter")
+        })
+    }
+}
+
+/// Packets each node of the slice executed (T3: a node's side effects, its counts included,
+/// belong to the tier that ran it). With traps, a whole run's counts are the sum of hardware's
+/// and software's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Executed {
+    pub(crate) arrived: u64,
+    pub(crate) pre: u64,
+    pub(crate) flow_filter: u64,
+    pub(crate) mid: u64,
+    pub(crate) acl: u64,
+    pub(crate) accepted: u64,
+}
+
+impl std::ops::Add for Executed {
+    type Output = Executed;
+
+    fn add(self, other: Executed) -> Executed {
+        Executed {
+            arrived: self.arrived + other.arrived,
+            pre: self.pre + other.pre,
+            flow_filter: self.flow_filter + other.flow_filter,
+            mid: self.mid + other.mid,
+            acl: self.acl + other.acl,
+            accepted: self.accepted + other.accepted,
+        }
+    }
+}
+
+/// Where emulated hardware stops: the composite, run as the NIC, leaves a packet to software at
+/// the first trap target the cut chooses for it, with that target's trap written on it.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) trait Cut<Buf: PacketBufferMut> {
+    /// Whether `packet`, about to enter `node`, traps there instead.
+    fn exit(&mut self, node: NonZero<u8>, packet: &Packet<Buf>) -> bool;
 }
 
 /// Where the composite gets its tables: once per burst, then told what the burst showed.
@@ -104,6 +283,7 @@ impl Source for Current {
             flow_filter: self.flow_filter.load(),
             acl: self.acl.load(),
             accepted: self.accepted.as_ref().map(RateLimitReader::load),
+            vpcs: Vpcs::default(),
         };
         Tables::only(self.snapshot.insert(Snapshot::new(0, Bank::A, tables)))
     }
@@ -162,6 +342,7 @@ impl From<mgmt::AdmissionUpdate> for AdmissionTables {
             flow_filter: update.flow_filter,
             acl: update.acl,
             accepted: Some(update.peering),
+            vpcs: Vpcs::new(update.vpcs),
         }
     }
 }
@@ -252,6 +433,8 @@ pub(crate) struct Admission<Pre, Mid, Src = Current> {
     sched: Option<SchedRun>,
     /// Where to register `sched` for the publisher to wake, if a publisher owns the tables.
     wakers: Option<Wakers>,
+    /// What each node executed.
+    executed: Executed,
 }
 
 impl<Pre, Mid> Admission<Pre, Mid> {
@@ -281,6 +464,7 @@ impl<Pre, Mid> Admission<Pre, Mid> {
             source,
             sched: None,
             wakers: None,
+            executed: Executed::default(),
         }
     }
 }
@@ -303,6 +487,7 @@ impl<Pre, Mid, Src> Admission<Pre, Mid, Src> {
             source: _,
             sched,
             wakers: _,
+            executed,
         } = self;
         Admission {
             arrived,
@@ -314,7 +499,14 @@ impl<Pre, Mid, Src> Admission<Pre, Mid, Src> {
             source,
             sched,
             wakers,
+            executed,
         }
+    }
+
+    /// What each node executed so far.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn executed(&self) -> Executed {
+        self.executed
     }
 }
 
@@ -344,9 +536,102 @@ where
     }
 }
 
+/// Packets trapped at a target after the flow filter: the verdict back on them, under their
+/// generation, and their destination VPC written; those whose payload names no VPC, dropped.
+fn enter_routed<'b, Buf, S>(
+    burst: &mut Burst<'b, Buf>,
+    sel: Sel<'b, S>,
+    tables: Tables<'b, AdmissionTables>,
+) -> (Sel<'b, Forget<S, kind::DstVpc>>, Drops<'b>)
+where
+    Buf: PacketBufferMut,
+    S: Edit<kind::DstVpc>,
+{
+    burst.per_generation(
+        sel,
+        tables,
+        |t| &t.vpcs,
+        |burst, sel, vpcs| {
+            let mut routed = Emit::<S, Assign<kind::DstVpc>>::new();
+            let mut bad = Drops::none();
+            for i in sel {
+                let packet = burst.packet_mut(&i);
+                let payload = packet.meta().trap().map_or(0, Trap::payload);
+                match Routed::decode(payload, vpcs, packet.meta_mut()) {
+                    Ok(dst) => {
+                        FlowFilter::keep_flow_key(packet);
+                        routed.push(burst, i, dst);
+                    }
+                    Err(Undecodable) => burst.drop(&mut bad, i, DoneReason::TrapDecode),
+                }
+            }
+            (routed.finish(), bad)
+        },
+    )
+}
+
+/// Packets trapped past the ACL: its opening TCP flags back on them.
+fn enter_allowed<'b, Buf, S>(
+    burst: &mut Burst<'b, Buf>,
+    sel: Sel<'b, S>,
+) -> Sel<'b, Forget<S, kind::OpeningTcpFlags>>
+where
+    Buf: PacketBufferMut,
+    S: Edit<kind::OpeningTcpFlags>,
+{
+    let mut allowed = Emit::<S, Assign<kind::OpeningTcpFlags>>::new();
+    for i in sel {
+        let flags = acl_filter::opening_tcp_flags(burst.packet(&i));
+        allowed.push(burst, i, flags);
+    }
+    allowed.finish()
+}
+
+/// Emulated hardware only: the packets of `sel` that `cut` stops at `node` get `node`'s trap,
+/// encoded under their generation, and leave (into `trapped`); the rest go on.
+fn exit<'b, Buf, S>(
+    burst: &mut Burst<'b, Buf>,
+    sel: Sel<'b, S>,
+    node: NonZero<u8>,
+    tables: Tables<'b, AdmissionTables>,
+    cut: &mut Option<&mut dyn Cut<Buf>>,
+    trapped: &mut u64,
+) -> Sel<'b, S>
+where
+    Buf: PacketBufferMut,
+    S: dag::State,
+{
+    let Some(cut) = cut.as_deref_mut() else {
+        return sel;
+    };
+    let (out, stay) = burst.filter(sel, |packet| cut.exit(node, packet));
+    let out = burst.per_generation(
+        out,
+        tables,
+        |t| &t.vpcs,
+        |burst, sel, vpcs| {
+            let mut left = Emit::<S, Keep>::new();
+            for i in sel {
+                let meta = burst.packet(&i).meta();
+                let stamp = meta
+                    .stamp()
+                    .unwrap_or_else(|| unreachable!("hardware stamps every packet it runs"));
+                let mark = Mark::new(stamp, Some(Trap::new(node, edge_payload(node, meta, vpcs))));
+                burst.packet_mut(&i).meta_mut().set_mark(Some(mark));
+                left.push(i);
+            }
+            left.finish()
+        },
+    );
+    *trapped |= out.bits();
+    stay
+}
+
 impl<Pre, Mid, Src: Source> Admission<Pre, Mid, Src> {
-    /// One burst of at most [`MAX_BURST`] packets.
-    fn chunk<Buf>(&mut self, packets: &mut Vec<Packet<Buf>>)
+    /// One burst of at most [`MAX_BURST`] packets. With a `cut`, the composite is emulated
+    /// hardware: packets the cut stops leave with a trap, and are not done.
+    #[allow(clippy::too_many_lines)] // one topology, read top to bottom
+    fn chunk<Buf>(&mut self, packets: &mut Vec<Packet<Buf>>, mut cut: Option<&mut dyn Cut<Buf>>)
     where
         Buf: PacketBufferMut,
         Pre: NetworkFunction<Buf>,
@@ -360,19 +645,61 @@ impl<Pre, Mid, Src: Source> Admission<Pre, Mid, Src> {
             acl,
             accepted,
             source,
+            executed,
             ..
         } = self;
         let tables = source.tables();
         let seen = dag::scope_with(packets, tables, |mut burst, all, tables| {
             let tables = *tables;
-            // Packets done or not from a VPC are not ours: they are in no edge, and untouched.
-            let (live, _) = burst.scan_where(all, |p| !p.is_done() && p.meta().is_overlay());
+            // Packets done or not from a VPC are not ours: they are in no edge, and untouched,
+            // unless hardware trapped one into the slice (T7: a lowering bug).
+            let (live, rest) = burst.scan_where(all, |p| !p.is_done() && p.meta().is_overlay());
+            let (misshapen, _) = burst.filter(rest, |p| !p.is_done() && p.meta().trap().is_some());
+            let mut misfits = Drops::none();
+            for i in misshapen {
+                burst.drop(&mut misfits, i, DoneReason::TrapShape);
+            }
             let live_bits = live.bits();
-            // Each packet runs under the generation its stamp names; a stale stamp is dropped.
+            // Each packet runs under the generation its stamp names; a stale stamp is dropped,
+            // trapped or not (T5).
             let (live, mut dropped, seen) = burst.resolve(live, tables);
+            // Where each packet enters (T1, T6); those trapped past the flow filter get its
+            // verdict back. Emulated hardware leaves packets at its cut (`trapped`).
+            let mut trapped = 0u64;
+            let Entries {
+                root,
+                at: [pre_entry, acl_entry, accepted_entry, export_entry],
+                unknown,
+            } = burst.enter(live, node::ALL);
+            for i in unknown {
+                burst.drop(&mut dropped, i, DoneReason::TrapUnknownNode);
+            }
+            let (pre_entry, undecodable) = burst.filter(pre_entry, |p| {
+                p.meta().trap().is_some_and(|t| t.payload() == 0)
+            });
+            for i in undecodable {
+                burst.drop(&mut dropped, i, DoneReason::TrapDecode);
+            }
+            let (acl_entry, bad) = enter_routed(&mut burst, acl_entry, tables);
+            dropped = dropped.join(bad);
+            let (accepted_entry, bad) = enter_routed(&mut burst, accepted_entry, tables);
+            dropped = dropped.join(bad);
+            let accepted_entry = enter_allowed(&mut burst, accepted_entry);
+            let (accepted_entry, no_src) = burst.split::<kind::SrcVpc, _>(accepted_entry);
+            for i in no_src {
+                burst.drop(&mut dropped, i, DoneReason::TrapShape);
+            }
+            let (accepted_entry, no_dst) = burst.split::<kind::DstVpc, _>(accepted_entry);
+            for i in no_dst {
+                burst.drop(&mut dropped, i, DoneReason::TrapDecode);
+            }
+            let (export_entry, bad) = enter_routed(&mut burst, export_entry, tables);
+            dropped = dropped.join(bad);
+            let export_entry = enter_allowed(&mut burst, export_entry);
 
             // The arrived meter, on packets whose source VPC is known.
-            let (known, unknown) = burst.split::<kind::SrcVpc, _>(live);
+            let (known, unknown) = burst.split::<kind::SrcVpc, _>(root);
+            executed.arrived += u64::from(known.len());
             let arrived_out = match arrived {
                 Some(meter) => {
                     let policed = burst.per_generation(
@@ -390,16 +717,28 @@ impl<Pre, Mid, Src: Source> Admission<Pre, Mid, Src> {
                 }
                 None => known,
             };
-            let arrived_out = arrived_out.join(unknown);
+            let pre_in = arrived_out.join(unknown).join(pre_entry);
+            let pre_in = exit(
+                &mut burst,
+                pre_in,
+                node::PRE,
+                tables,
+                &mut cut,
+                &mut trapped,
+            );
 
-            // Legacy: ICMP errors, flow lookup. Hosted at a join, so it sees every live packet.
-            let (looked_up, lost) = burst.legacy(arrived_out, LEGACY_WRITES, |packets| {
+            // Legacy: ICMP errors, flow lookup. Hosted at a join, so it sees every live packet
+            // at this point, and only those.
+            executed.pre += u64::from(pre_in.len());
+            let hide = live_bits & !pre_in.bits();
+            let (looked_up, lost) = burst.legacy_hiding(pre_in, hide, LEGACY_WRITES, |packets| {
                 pre.process_burst(packets);
             });
             dropped = dropped.join(lost);
 
             // The flow filter, on packets no earlier stage gave a destination.
             let (placed, unplaced) = burst.split::<kind::DstVpc, _>(looked_up);
+            executed.flow_filter += u64::from(unplaced.len());
             let routed = burst.per_generation(
                 unplaced,
                 tables,
@@ -410,12 +749,25 @@ impl<Pre, Mid, Src: Source> Admission<Pre, Mid, Src> {
             let placed = routed.routed.join(placed);
 
             // Legacy: the SYN cookie checker.
-            let (checked, lost) =
-                burst.legacy(placed, LEGACY_WRITES, |packets| mid.process_burst(packets));
+            executed.mid += u64::from(placed.len());
+            let hide = live_bits & !placed.bits();
+            let (checked, lost) = burst.legacy_hiding(placed, hide, LEGACY_WRITES, |packets| {
+                mid.process_burst(packets);
+            });
             dropped = dropped.join(lost);
 
             // The ACL, on packets whose VPCs are both known; the legacy ACL drops the others first.
-            let (with_src, no_src) = burst.split::<kind::SrcVpc, _>(checked);
+            let acl_in = checked.join(acl_entry);
+            let acl_in = exit(
+                &mut burst,
+                acl_in,
+                node::ACL,
+                tables,
+                &mut cut,
+                &mut trapped,
+            );
+            executed.acl += u64::from(acl_in.len());
+            let (with_src, no_src) = burst.split::<kind::SrcVpc, _>(acl_in);
             let (acl_in, no_dst) = burst.split::<kind::DstVpc, _>(with_src);
             let mut unroutable = Drops::none();
             for i in no_src {
@@ -434,10 +786,20 @@ impl<Pre, Mid, Src: Source> Admission<Pre, Mid, Src> {
             dropped = dropped.join(filtered.dropped);
 
             // The accepted meter.
+            let accepted_in = filtered.allowed.join(accepted_entry);
+            let accepted_in = exit(
+                &mut burst,
+                accepted_in,
+                node::ACCEPTED,
+                tables,
+                &mut cut,
+                &mut trapped,
+            );
+            executed.accepted += u64::from(accepted_in.len());
             let admitted = match accepted {
                 Some(meter) => {
                     let policed = burst.per_generation(
-                        filtered.allowed,
+                        accepted_in,
                         tables,
                         |t| &t.accepted,
                         |burst, sel, limits| {
@@ -449,16 +811,44 @@ impl<Pre, Mid, Src: Source> Admission<Pre, Mid, Src> {
                     dropped = dropped.join(policed.dropped);
                     policed.passed
                 }
-                None => filtered.allowed,
+                None => accepted_in,
             };
+            let admitted = exit(
+                &mut burst,
+                admitted,
+                node::EXPORT,
+                tables,
+                &mut cut,
+                &mut trapped,
+            );
 
             debug_assert!(
-                dag::partitions(live_bits, &[admitted.bits(), dropped.bits()]),
+                dag::partitions(
+                    live_bits,
+                    &[
+                        admitted.bits(),
+                        export_entry.bits(),
+                        dropped.bits(),
+                        trapped
+                    ]
+                ),
                 "admission's outcomes do not partition its input"
             );
             seen
         });
         source.settle(seen);
+    }
+
+    /// Run `packets` (at most [`MAX_BURST`]) as emulated hardware: stopped where `cut` says.
+    #[cfg(test)]
+    pub(crate) fn emulate<Buf>(&mut self, packets: &mut Vec<Packet<Buf>>, cut: &mut dyn Cut<Buf>)
+    where
+        Buf: PacketBufferMut,
+        Pre: NetworkFunction<Buf>,
+        Mid: NetworkFunction<Buf>,
+    {
+        assert!(packets.len() <= MAX_BURST, "emulated bursts only");
+        self.chunk(packets, Some(cut));
     }
 }
 
@@ -474,7 +864,7 @@ where
             // A scheduled run on an empty poll: observe, and count it towards acknowledging.
             self.source.idle();
         } else if burst.len() <= MAX_BURST {
-            self.chunk(burst);
+            self.chunk(burst, None);
         } else {
             self.chunks(burst);
         }
@@ -513,10 +903,10 @@ impl<Pre, Mid, Src: Source> Admission<Pre, Mid, Src> {
         Mid: NetworkFunction<Buf>,
     {
         let mut rest = burst.split_off(MAX_BURST);
-        self.chunk(burst);
+        self.chunk(burst, None);
         while !rest.is_empty() {
             let tail = rest.split_off(rest.len().min(MAX_BURST));
-            self.chunk(&mut rest);
+            self.chunk(&mut rest, None);
             burst.append(&mut rest);
             rest = tail;
         }

@@ -32,6 +32,8 @@
 //! - **Joins meet** ([`Sel::join`]); **guards narrow** ([`Burst::split`]).
 //! - **Each packet runs under one configuration generation** ([`generation`]): nodes that read
 //!   tables get them as arguments, once per live generation in their selection.
+//! - **Hardware may have run a prefix of the graph** ([`trap`]): a packet enters at the node it
+//!   was trapped at, as one more inbound edge of that node.
 //!
 //! The kinds list is closed ([`kind`]). No `unsafe`.
 
@@ -40,6 +42,7 @@ mod columns;
 pub mod generation;
 mod meta;
 mod presence;
+pub mod trap;
 
 pub use burst::{
     Assign, Burst, Drops, Emit, Idx, Iter, Keep, Op, Sel, Split, Write, partitions, scope,

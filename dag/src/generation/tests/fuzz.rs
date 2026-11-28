@@ -142,7 +142,7 @@ impl Model<'_> {
                     let retired = Stamp::new(bank(self.newest - 1), self.newest - 1);
                     for (w, ring) in self.rings.iter().enumerate() {
                         assert!(
-                            ring.iter().all(|p| p.meta().stamp != Some(retired)),
+                            ring.iter().all(|p| p.meta().stamp() != Some(retired)),
                             "retired {} with its packets still in worker {w}'s ring",
                             self.newest - 1
                         );
